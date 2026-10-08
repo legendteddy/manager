@@ -12,9 +12,10 @@ The Python reference runtime exposes:
 - `CapacityLimits` / `CapacityManager`: non-blocking concurrency gates, a bounded run queue, and checkpoint-size limits;
 - `OperationalRuntime`: shared telemetry plus capacity control for run, model, tool, MCP and state operations;
 - `ObservedModelAdapter`: provider-neutral model instrumentation and model concurrency protection;
-- `ObservedRunStore`: state latency/error instrumentation plus checkpoint-size enforcement.
+- `ObservedRunStore`: state latency/error instrumentation plus checkpoint-size enforcement;
+- governed tool execution and the official MCP bridge use the same capacity semantics at their actual adapter/transport boundaries.
 
-An embedding service should create one long-lived `OperationalRuntime` per process and reuse it across requests. Creating one runtime per request defeats process-level concurrency accounting.
+An embedding service should create one long-lived `OperationalRuntime` per process and reuse it across requests. Creating one runtime per request defeats process-level concurrency accounting. Wrap model adapters and run stores with that instance before passing them into Manager workflows. Direct governed tool calls may receive the same instance explicitly. The built-in MCP bridge accepts it through its constructor.
 
 ## Privacy and redaction
 
@@ -30,9 +31,9 @@ Metric labels are allowlisted to low-cardinality dimensions. High-cardinality id
 
 Telemetry sink failure is fail-safe and non-authoritative. `SafeTelemetry` catches sink exceptions and increments an in-process failure count. It does not retry recursively, block execution, alter authorization or mutate durable state.
 
-Capacity failure is different. Concurrency gates use non-blocking acquisition. When capacity is exhausted, new work receives `OverloadedError` immediately rather than waiting in hidden queues. The bounded run queue raises the same error when full.
+Capacity failure is different. Concurrency gates use non-blocking acquisition. When capacity is exhausted, new work receives `OverloadedError` immediately rather than waiting in hidden queues. The bounded run queue raises the same error when full. Governed tool overload is represented as a blocked `overload_rejected` tool result before a second adapter call can occur. MCP overload is normalized through the MCP boundary without exposing target or credential details.
 
-A service boundary should translate `OverloadedError` into its explicit overload response (for example HTTP 429/503 according to the service contract) and should not silently retry inside the same saturated process.
+A service boundary should translate `OverloadedError` into its explicit overload response, for example HTTP 429/503 according to the service contract, and should not silently retry inside the same saturated process.
 
 ## Default capacity assumptions
 
@@ -53,7 +54,7 @@ Deployments must tune these values from measured provider quotas, memory/CPU pro
 
 ## Metrics
 
-The operational layer emits or reserves these provider-neutral concepts. Backends may rename them at export time, but should preserve meaning and bounded dimensions.
+The operational layer provides these provider-neutral concepts. Backends may rename them at export time, but should preserve meaning and bounded dimensions.
 
 | Metric | Type | Meaning |
 | --- | --- | --- |
@@ -62,14 +63,32 @@ The operational layer emits or reserves these provider-neutral concepts. Backend
 | `manager_active_tool_calls` | gauge | tool concurrency |
 | `manager_active_mcp_calls` | gauge | MCP concurrency |
 | `manager_active_state_calls` | gauge | state backend concurrency |
+| `manager_queue_depth` | gauge | bounded local run queue depth |
+| `manager_approval_wait_count` | gauge | authoritative approval-wait backlog supplied by the embedding service |
+| `manager_recovery_required_count` | gauge | authoritative recovery-required backlog supplied by the embedding service |
 | `manager_run_latency_seconds` | histogram | run execution latency |
 | `manager_provider_latency_seconds` | histogram | provider latency |
 | `manager_tool_latency_seconds` | histogram | tool latency |
 | `manager_mcp_latency_seconds` | histogram | MCP latency |
 | `manager_state_latency_seconds` | histogram | state operation latency |
+| `manager_completed_runs_total` | counter | completed runs reported by authoritative outcome handling |
+| `manager_failed_runs_total` | counter | failed runs reported by authoritative outcome handling |
+| `manager_retries_total` | counter | bounded retry attempts |
+| `manager_duplicate_suppression_total` | counter | duplicate work suppressed before repeat execution |
+| `manager_policy_denials_total` | counter | policy-denied actions |
+| `manager_timeouts_total` | counter | operation timeouts |
+| `manager_cancellations_total` | counter | cancellations |
+| `manager_budget_exhaustion_total` | counter | model/tool/run budget exhaustion |
+| `manager_state_errors_total` | counter | state backend errors |
 | `manager_overload_rejections_total` | counter | deterministic capacity rejections |
 
-Service integrations should additionally count completed/failed runs, queue depth, approval waits, recovery-required runs, retries, duplicate suppression, policy denials, timeouts, cancellations and budget exhaustion from the authoritative runtime outcomes. Do not infer those states from log text when durable state can report them directly.
+Backlog gauges and outcome counters must be fed from authoritative runtime or durable state outcomes. Do not infer approval, recovery, completion or failure merely from log text.
+
+## Structured events and correlation
+
+Useful event names include `run.submitted`, `run.queued`, `run.started`, `run.completed`, provider request start/failure/completion, tool execution start/failure/completion, MCP invocation start/failure/completion, state operation start/failure/completion, overload rejection and normalized outcome events.
+
+Correlation can connect request → run → model request → tool request → state revision. Correlation is diagnostic metadata only. Supplying or propagating a correlation value never establishes identity, authorization, approval, trusted provenance or execution authority.
 
 ## Suggested alert conditions
 
@@ -102,4 +121,6 @@ Exact paging thresholds, retention periods and SLO/error budgets require maintai
 
 ## Synthetic stress coverage
 
-The reference tests exercise thousands of telemetry records against a bounded buffer, sink failure, model concurrency saturation, bounded queue rejection, checkpoint-size rejection, and high-cardinality label filtering without real providers. Service-specific load tests should add slow provider/tool/state doubles, cancellation/timeout storms, retry storms and recovery backlogs at the service layer where request queues and cancellation semantics exist.
+The reference tests use no real providers. They exercise thousands of telemetry records against bounded buffers, telemetry sink failure, slow model saturation, slow governed-tool saturation, slow state-backend saturation, bounded queue overflow, 1,000 rejection bursts, retry/cancellation/completion/duplicate storms, backlog gauges, checkpoint-size rejection, high-cardinality label filtering and secret non-disclosure during overload.
+
+These tests establish repeatable behavior for the reference primitives. They are not a deployment-specific capacity benchmark. A production service still needs environment-specific load tests for its HTTP/service queue, cancellation propagation, provider quotas, datastore topology, process model, MCP servers and real resource limits.
