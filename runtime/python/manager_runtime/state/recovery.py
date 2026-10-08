@@ -34,6 +34,20 @@ def _validate_resolution(run_id: str, resolution: dict[str, Any]) -> None:
         raise RunStateError("recovery resolution redacted must be boolean")
 
 
+def _validated_authorization_subset(
+    source: dict[str, Any], keys: tuple[str, ...]
+) -> dict[str, bool]:
+    result: dict[str, bool] = {}
+    for key in keys:
+        if key not in source:
+            continue
+        value = source[key]
+        if not isinstance(value, bool):
+            raise RunStateError(f"current authorization field {key!r} must be boolean")
+        result[key] = value
+    return result
+
+
 def _current_pending(state: RunState, registry: ToolRegistry) -> tuple[dict[str, Any], Any]:
     pending = state.get("pending_action")
     if not isinstance(pending, dict):
@@ -88,11 +102,9 @@ def _fresh_approval_after_confirmed_no_effect(
         task["classification"] = {}
     task["classification"]["materiality"] = "material"
 
-    context = {
-        key: bool(current_authorization.get(key))
-        for key in ("scope_authorized", "target_verified")
-        if key in current_authorization
-    }
+    context = _validated_authorization_subset(
+        current_authorization, ("scope_authorized", "target_verified")
+    )
     context["human_intent_confirmed"] = False
     result = execute_tool_request(task, fresh_request, registry, context)
     if result.get("status") != "approval_required" or not isinstance(result.get("approval"), dict):
@@ -146,7 +158,9 @@ def _confirmed_success(
 ) -> RunState:
     request, registered = _current_pending(state, registry)
     approval = state["pending_action"].get("approval") or {}
-    redacted = bool(resolution.get("redacted", registered.definition.get("sensitive_output", False)))
+    redacted = bool(registered.definition.get("sensitive_output", False)) or bool(
+        resolution.get("redacted", False)
+    )
     result: dict[str, Any] = {
         "request_id": request["request_id"],
         "tool_name": request["tool_name"],
@@ -223,8 +237,9 @@ def resolve_recovery_required(
 
     `confirmed_succeeded` records an externally verified successful effect and,
     for a durable agent loop, returns the checkpoint to `continuation_ready`.
-    `confirmed_not_executed` creates a fresh approval checkpoint with a new
-    request/approval identity. `cancelled` terminates the run without retrying.
+    `confirmed_not_executed` creates a fresh request and approval identity. A
+    recovery decision may request additional redaction but can never weaken a
+    registered tool's sensitive-output policy.
     """
     _validate_resolution(run_id, resolution)
     state = store.load(run_id)
