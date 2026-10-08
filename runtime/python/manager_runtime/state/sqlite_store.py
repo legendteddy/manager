@@ -23,6 +23,7 @@ from .transitions import validate_run_state_shape, validate_run_state_transition
 SQLITE_STATE_SCHEMA_VERSION = 2
 _OPERATION_STATUSES = {"started", "confirmed", "not_executed", "outcome_unknown"}
 _TERMINAL_OPERATION_STATUSES = _OPERATION_STATUSES - {"started"}
+_RECOVERY_RESOLVED_OPERATION_STATUSES = {"confirmed", "not_executed"}
 _MAX_LEASE_TTL_SECONDS = 86_400
 
 
@@ -42,6 +43,7 @@ class SQLiteRunStore:
         fencing=True,
         durable_idempotency=True,
         execution_guard=True,
+        atomic_recovery_resolution=True,
         coordination_scope="local_multi_process",
     )
 
@@ -173,7 +175,12 @@ class SQLiteRunStore:
                     (str(version),),
                 )
 
-            required = {"manager_runs", "manager_state_meta", "manager_run_leases", "manager_operations"}
+            required = {
+                "manager_runs",
+                "manager_state_meta",
+                "manager_run_leases",
+                "manager_operations",
+            }
             actual = {
                 row["name"]
                 for row in connection.execute(
@@ -291,7 +298,10 @@ class SQLiteRunStore:
         ).fetchone()
         if row is None:
             raise RunLeaseExpired(f"run lease does not exist: {lease.run_id}")
-        if row["owner_id"] != lease.owner_id or row["fencing_token"] != lease.fencing_token:
+        if (
+            row["owner_id"] != lease.owner_id
+            or row["fencing_token"] != lease.fencing_token
+        ):
             raise RunLeaseExpired(
                 f"run lease fencing token is stale: {lease.run_id}@{lease.fencing_token}"
             )
@@ -419,7 +429,9 @@ class SQLiteRunStore:
                     f"run already has an active lease: {run_id}@{row['fencing_token']}"
                 )
 
-            fencing_token = 1 if row is None else int(row["fencing_token"]) + 1
+            fencing_token = (
+                1 if row is None else int(row["fencing_token"]) + 1
+            )
             expires_at = now + ttl_seconds
             if row is None:
                 connection.execute(
@@ -462,7 +474,12 @@ class SQLiteRunStore:
                 UPDATE manager_run_leases SET expires_at_epoch = ?
                 WHERE run_id = ? AND owner_id = ? AND fencing_token = ?
                 """,
-                (expires_at, lease.run_id, lease.owner_id, lease.fencing_token),
+                (
+                    expires_at,
+                    lease.run_id,
+                    lease.owner_id,
+                    lease.fencing_token,
+                ),
             )
             connection.commit()
             return RunLease(
@@ -488,7 +505,9 @@ class SQLiteRunStore:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            self._assert_lease_row(connection, lease, require_unexpired=False)
+            self._assert_lease_row(
+                connection, lease, require_unexpired=False
+            )
             cursor = connection.execute(
                 """
                 UPDATE manager_run_leases SET expires_at_epoch = 0
@@ -589,7 +608,12 @@ class SQLiteRunStore:
                     UPDATE manager_run_leases SET expires_at_epoch = ?
                     WHERE run_id = ? AND owner_id = ? AND fencing_token = ?
                     """,
-                    (expires_at, lease.run_id, lease.owner_id, lease.fencing_token),
+                    (
+                        expires_at,
+                        lease.run_id,
+                        lease.owner_id,
+                        lease.fencing_token,
+                    ),
                 )
                 connection.commit()
         except sqlite3.OperationalError as exc:
@@ -611,7 +635,10 @@ class SQLiteRunStore:
     ) -> DurableOperation:
         if not isinstance(operation_id, str) or not operation_id.strip():
             raise RunStateError("operation_id must be non-empty text")
-        if not isinstance(request_fingerprint, str) or not request_fingerprint.strip():
+        if (
+            not isinstance(request_fingerprint, str)
+            or not request_fingerprint.strip()
+        ):
             raise RunStateError("request_fingerprint must be non-empty text")
         connection = self._connect()
         try:
@@ -705,7 +732,12 @@ class SQLiteRunStore:
         encoded_result = (
             None
             if result is None
-            else json.dumps(result, sort_keys=True, separators=(",", ":"), default=str)
+            else json.dumps(
+                result,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
         )
         connection = self._connect()
         try:
@@ -735,7 +767,10 @@ class SQLiteRunStore:
                     "stale worker cannot finish an operation claimed by another fence"
                 )
             if row["status"] != "started":
-                if row["status"] == status and row["result_json"] == encoded_result:
+                if (
+                    row["status"] == status
+                    and row["result_json"] == encoded_result
+                ):
                     value = self._operation_from_row(row, claimed=False)
                     connection.commit()
                     return value
@@ -767,6 +802,129 @@ class SQLiteRunStore:
                 result=deepcopy(result),
                 claimed=False,
             )
+        except sqlite3.OperationalError as exc:
+            connection.rollback()
+            raise self._backend_error(exc) from exc
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def resolve_operation_and_compare_and_swap(
+        self,
+        run_id: str,
+        expected_revision: int,
+        state: RunState,
+        *,
+        lease: RunLease,
+        operation_id: str,
+        request_fingerprint: str,
+        operation_status: str,
+        operation_result: RunState | None,
+    ) -> RunState:
+        """Atomically reconcile uncertain operation evidence with run state."""
+        if lease.run_id != run_id:
+            raise RunStateError(
+                "lease run_id does not match recovery transaction run_id"
+            )
+        if operation_status not in _RECOVERY_RESOLVED_OPERATION_STATUSES:
+            raise RunStateError(
+                "recovery operation status must be confirmed or not_executed"
+            )
+        if not isinstance(operation_id, str) or not operation_id.strip():
+            raise RunStateError("operation_id must be non-empty text")
+        if (
+            not isinstance(request_fingerprint, str)
+            or not request_fingerprint.strip()
+        ):
+            raise RunStateError("request_fingerprint must be non-empty text")
+        candidate = deepcopy(state)
+        if candidate.get("run_id") != run_id:
+            raise RunStateError("replacement run_id must match the stored run")
+        encoded_result = (
+            None
+            if operation_result is None
+            else json.dumps(
+                operation_result,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+        )
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_lease_row(connection, lease)
+            run_row = connection.execute(
+                "SELECT revision, state_json FROM manager_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if run_row is None:
+                raise RunStateConflict(f"run does not exist: {run_id}")
+            if run_row["revision"] != expected_revision:
+                raise RunStateConflict(
+                    f"run revision changed before recovery: {run_id}@{expected_revision}"
+                )
+            previous = self._decoded(run_row["state_json"])
+            if previous["status"] != "recovery_required":
+                raise RunStateError(
+                    "atomic operation recovery requires recovery_required run state"
+                )
+
+            operation_row = connection.execute(
+                """
+                SELECT operation_id, run_id, request_fingerprint, fencing_token,
+                       status, result_json
+                FROM manager_operations WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if operation_row is None:
+                raise OperationConflict(
+                    f"durable operation does not exist: {operation_id}"
+                )
+            if (
+                operation_row["run_id"] != run_id
+                or operation_row["request_fingerprint"] != request_fingerprint
+            ):
+                raise OperationConflict(
+                    f"durable operation identity changed: {operation_id}"
+                )
+            if operation_row["status"] not in {"started", "outcome_unknown"}:
+                raise OperationConflict(
+                    f"durable operation is not uncertain: {operation_id}"
+                )
+
+            now = self._db_now(connection)
+            cursor = connection.execute(
+                """
+                UPDATE manager_operations
+                SET fencing_token = ?, status = ?, result_json = ?, updated_at_epoch = ?
+                WHERE operation_id = ? AND status IN ('started', 'outcome_unknown')
+                """,
+                (
+                    lease.fencing_token,
+                    operation_status,
+                    encoded_result,
+                    now,
+                    operation_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OperationConflict(
+                    f"durable operation changed before recovery: {operation_id}"
+                )
+
+            value = self._compare_and_swap_in_connection(
+                connection,
+                run_id,
+                expected_revision,
+                candidate,
+            )
+            connection.commit()
+            return value
         except sqlite3.OperationalError as exc:
             connection.rollback()
             raise self._backend_error(exc) from exc
