@@ -356,6 +356,18 @@ def validate_tool_definition(definition: ToolPayload) -> None:
         version = definition["version"]
         if not isinstance(version, str) or not version.strip():
             raise ValueError("tool version must be non-empty text")
+
+    try:
+        json.dumps(
+            definition,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise TypeError("tool definition must be JSON-compatible") from exc
+
     if (
         definition["side_effect_class"] in CONSEQUENTIAL_CLASSES
         and not definition["requires_verification"]
