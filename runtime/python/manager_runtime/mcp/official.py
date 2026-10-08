@@ -62,6 +62,14 @@ class OfficialMCPClient:
                     return match
         return None
 
+    @staticmethod
+    def _find_nested_sdk_error(error: BaseException) -> BaseException | None:
+        try:
+            from mcp.shared.exceptions import MCPError
+        except ImportError:  # pragma: no cover - optional dependency
+            return None
+        return OfficialMCPClient._find_nested_exception(error, MCPError)
+
     def _run_operation(
         self, operation: str, function: Callable[[], Awaitable[T]]
     ) -> T:
@@ -83,6 +91,12 @@ class OfficialMCPClient:
             boundary = self._find_nested_exception(exc, MCPBoundaryError)
             if boundary is not None:
                 raise MCPBoundaryError(str(boundary)) from boundary
+
+            sdk_error = self._find_nested_sdk_error(exc)
+            if sdk_error is not None:
+                raise MCPBoundaryError(
+                    f"MCP {operation} failed: {sdk_error}"
+                ) from sdk_error
 
             raise MCPBoundaryError(
                 f"MCP {operation} failed: {type(exc).__name__}: {exc}"
