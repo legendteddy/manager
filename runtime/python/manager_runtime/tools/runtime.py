@@ -16,6 +16,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _authorization_flag(authorization: ToolPayload, key: str) -> bool:
+    if key not in authorization:
+        return False
+    value = authorization[key]
+    if not isinstance(value, bool):
+        raise TypeError(f"authorization field {key!r} must be boolean")
+    return value
+
+
 def _approval_packet(
     request: ToolPayload,
     *,
@@ -128,6 +137,15 @@ def execute_tool_request(
     model output. The model proposal supplies only tool identity and arguments.
     """
     validate_tool_request(request)
+    if authorization is not None and not isinstance(authorization, dict):
+        return _result(
+            request,
+            "analysis",
+            status="blocked",
+            reason="invalid_authorization_context",
+            verification_status="not_required",
+            error="authorization context must be an object",
+        )
     authorization = dict(authorization or {})
     registered = registry.get(request["tool_name"])
     if registered is None:
@@ -154,9 +172,22 @@ def execute_tool_request(
             error=str(exc),
         )
 
-    scope_authorized = bool(authorization.get("scope_authorized"))
-    human_intent_confirmed = bool(authorization.get("human_intent_confirmed"))
-    target_verified = bool(authorization.get("target_verified"))
+    try:
+        scope_authorized = _authorization_flag(authorization, "scope_authorized")
+        human_intent_confirmed = _authorization_flag(
+            authorization, "human_intent_confirmed"
+        )
+        target_verified = _authorization_flag(authorization, "target_verified")
+    except TypeError as exc:
+        return _result(
+            request,
+            side_effect_class,
+            status="blocked",
+            reason="invalid_authorization_context",
+            verification_status="not_required",
+            error=str(exc),
+        )
+
     task_materiality = task.get("classification", {}).get("materiality", "routine")
 
     if side_effect_class != "analysis" and not scope_authorized:
