@@ -315,7 +315,8 @@ class SafeTelemetry:
     ) -> None:
         try:
             safe_name = name if type(name) is str and _SAFE_EVENT_NAME.fullmatch(name) else "telemetry.invalid_event_name"
-            safe_attributes = redact(attributes or {})
+            source_attributes = {} if attributes is None else attributes
+            safe_attributes = redact(source_attributes)
             if not isinstance(safe_attributes, dict):
                 safe_attributes = {"value": safe_attributes}
             event = StructuredEvent(
