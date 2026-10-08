@@ -9,8 +9,8 @@ permissions:
 
 jobs:
   public-safety:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 7
     steps:
       - name: Check out event revision
         shell: bash
@@ -44,6 +44,19 @@ jobs:
       - name: Validate contracts and emitted runtime artifacts
         shell: bash
         run: PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
+
+      - name: Build and import Python distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/manager-wheel /tmp/manager-install
+          mkdir -p /tmp/manager-wheel /tmp/manager-install
+          python3 -m pip wheel --disable-pip-version-check --no-deps --wheel-dir /tmp/manager-wheel runtime/python
+          python3 -m pip install --disable-pip-version-check --no-deps --target /tmp/manager-install /tmp/manager-wheel/*.whl
+          PYTHONPATH=/tmp/manager-install python3 - <<'PY'
+          import manager_runtime
+          assert manager_runtime.__all__
+          PY
 
       - name: Install optional MCP transport dependency
         shell: bash
