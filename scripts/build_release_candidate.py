@@ -143,7 +143,11 @@ def read_wheel_identity(path: Path) -> tuple[str, str]:
         raise SystemExit(f"dependency bundle contains non-wheel file: {path.name}")
     metadata_members: list[str] = []
     with zipfile.ZipFile(path) as archive:
-        metadata_members = [name for name in archive.namelist() if name.endswith(".dist-info/METADATA")]
+        metadata_members = [
+            name
+            for name in archive.namelist()
+            if name.count("/") == 1 and name.endswith(".dist-info/METADATA")
+        ]
         if len(metadata_members) != 1:
             raise SystemExit(f"wheel must contain exactly one METADATA file: {path.name}")
         metadata = archive.read(metadata_members[0]).decode("utf-8", errors="strict")
