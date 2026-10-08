@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import json
+import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
 from ..tools.base import ToolRegistry, tool_definition_fingerprint, tool_request_fingerprint
 from ..tools.runtime import execute_tool_request
-from .base import RunState, RunStateError, RunStore
+from .base import (
+    DurableOperation,
+    RunLease,
+    RunState,
+    RunStateError,
+    RunStore,
+    require_coordinated_store,
+)
 
 
 def _now() -> str:
@@ -38,7 +46,19 @@ def _safe_authorization_context(value: dict[str, Any] | None) -> dict[str, Any]:
     return result
 
 
-def _serialize_recorded_tool_output(result: dict[str, Any], max_chars: int) -> tuple[str, bool]:
+def _worker_identity(value: str | None) -> str:
+    if value is None:
+        return f"worker:{uuid.uuid4().hex}"
+    if not isinstance(value, str) or not value.strip():
+        raise RunStateError("worker_id must be non-empty text when supplied")
+    if len(value) > 256:
+        raise RunStateError("worker_id is too long")
+    return value
+
+
+def _serialize_recorded_tool_output(
+    result: dict[str, Any], max_chars: int
+) -> tuple[str, bool]:
     if result.get("redacted"):
         return "Tool executed successfully; output withheld from the model by Manager policy.", True
     try:
@@ -64,6 +84,8 @@ def _recover_recorded_loop_execution(
     store: RunStore,
     state: RunState,
     registry: ToolRegistry,
+    *,
+    lease: RunLease | None = None,
 ) -> RunState | None:
     """Promote a durably recorded verified effect to continuation-ready.
 
@@ -89,7 +111,9 @@ def _recover_recorded_loop_execution(
         raise RunStateError("recorded loop execution is missing its tool request")
     expected_request = checkpoint.get("pending_request_fingerprint")
     if expected_request != tool_request_fingerprint(request):
-        raise RunStateError("recorded loop execution request identity no longer matches checkpoint")
+        raise RunStateError(
+            "recorded loop execution request identity no longer matches checkpoint"
+        )
 
     registered = registry.get(request.get("tool_name"))
     if registered is None:
@@ -97,7 +121,9 @@ def _recover_recorded_loop_execution(
     if pending.get("tool_definition_fingerprint") != tool_definition_fingerprint(
         registered.definition
     ):
-        raise RunStateError("recorded loop execution tool definition changed before continuation")
+        raise RunStateError(
+            "recorded loop execution tool definition changed before continuation"
+        )
 
     proposal_id = checkpoint.get("pending_proposal_id")
     if not isinstance(proposal_id, str) or not proposal_id:
@@ -145,7 +171,12 @@ def _recover_recorded_loop_execution(
         result_snapshot["owner_decision_required"] = False
         result_snapshot["decision_request"] = None
 
-    return store.compare_and_swap(state["run_id"], state["revision"], replacement)
+    if lease is None:
+        return store.compare_and_swap(state["run_id"], state["revision"], replacement)
+    coordinated = require_coordinated_store(store)
+    return coordinated.fenced_compare_and_swap(
+        state["run_id"], state["revision"], replacement, lease=lease
+    )
 
 
 def checkpoint_pending_tool_approval(
@@ -212,6 +243,129 @@ def _mark_stale(store: RunStore, state: RunState, reason: str) -> RunState:
     return store.compare_and_swap(state["run_id"], state["revision"], replacement)
 
 
+def _fenced_mark_stale(
+    store: RunStore,
+    state: RunState,
+    reason: str,
+    *,
+    lease: RunLease,
+) -> RunState:
+    replacement = deepcopy(state)
+    pending = replacement["pending_action"]
+    approval = pending["approval"]
+    approval["status"] = "stale"
+    approval["reason"] = reason
+    approval["resolved_at"] = None
+    approval["resolved_by"] = None
+    approval["approved_by"] = None
+    replacement["revision"] = state["revision"] + 1
+    replacement["updated_at"] = _now()
+    replacement["status"] = "waiting_approval"
+    coordinated = require_coordinated_store(store)
+    return coordinated.fenced_compare_and_swap(
+        state["run_id"], state["revision"], replacement, lease=lease
+    )
+
+
+def _pending_request(state: RunState) -> dict[str, Any]:
+    pending = state.get("pending_action")
+    if not isinstance(pending, dict):
+        raise RunStateError(f"{state['status']} run is missing pending_action")
+    request = pending.get("tool_request")
+    if not isinstance(request, dict):
+        raise RunStateError(f"{state['status']} run is missing its tool request")
+    return request
+
+
+def _recovery_required(
+    store: RunStore,
+    state: RunState,
+    *,
+    lease: RunLease,
+    reason: str,
+    last_tool_result: dict[str, Any] | None = None,
+) -> RunState:
+    replacement = deepcopy(state)
+    replacement["status"] = "recovery_required"
+    replacement["recovery_reason"] = reason
+    if last_tool_result is not None:
+        replacement["last_tool_result"] = deepcopy(last_tool_result)
+    replacement["revision"] = state["revision"] + 1
+    replacement["updated_at"] = _now()
+    coordinated = require_coordinated_store(store)
+    return coordinated.fenced_compare_and_swap(
+        state["run_id"], state["revision"], replacement, lease=lease
+    )
+
+
+def _persist_confirmed_operation(
+    store: RunStore,
+    state: RunState,
+    result: dict[str, Any],
+    *,
+    lease: RunLease,
+    success_status: str,
+) -> RunState:
+    replacement = deepcopy(state)
+    replacement["last_tool_result"] = deepcopy(result)
+    replacement["revision"] = state["revision"] + 1
+    replacement["updated_at"] = _now()
+    synthetic_running_view = False
+    if success_status == "running":
+        # Keep durable state executing until the outer durable-loop CAS commits
+        # continuation_ready. A crash in this window is recoverable from the
+        # confirmed operation result without another external execution.
+        replacement["status"] = "executing"
+        synthetic_running_view = True
+    else:
+        replacement["status"] = "completed"
+        replacement["pending_action"] = None
+        replacement["recovery_reason"] = None
+
+    coordinated = require_coordinated_store(store)
+    persisted = coordinated.fenced_compare_and_swap(
+        state["run_id"], state["revision"], replacement, lease=lease
+    )
+    if synthetic_running_view:
+        returned = deepcopy(persisted)
+        returned["status"] = "running"
+        return returned
+    return persisted
+
+
+def _reuse_existing_operation(
+    store: RunStore,
+    state: RunState,
+    registry: ToolRegistry,
+    operation: DurableOperation | None,
+    *,
+    lease: RunLease,
+    success_status: str,
+) -> RunState:
+    if operation is not None and operation.status == "confirmed":
+        result = operation.result
+        if not isinstance(result, dict) or result.get("status") != "executed":
+            raise RunStateError(
+                "confirmed durable operation is missing its executed result"
+            )
+        return _persist_confirmed_operation(
+            store,
+            state,
+            result,
+            lease=lease,
+            success_status=success_status,
+        )
+
+    request = _pending_request(state)
+    status = "missing" if operation is None else operation.status
+    reason = (
+        "Run execution cannot be proven safe to replay. "
+        f"Durable operation {request.get('request_id')!r} is {status!r}; "
+        "reconcile external evidence before any new consequential execution."
+    )
+    return _recovery_required(store, state, lease=lease, reason=reason)
+
+
 def resume_tool_approval(
     store: RunStore,
     run_id: str,
@@ -221,149 +375,231 @@ def resume_tool_approval(
     current_authorization: dict[str, Any],
     current_request: dict[str, Any] | None = None,
     success_status: str = "completed",
+    worker_id: str | None = None,
+    lease_ttl_seconds: int = 30,
 ) -> RunState:
-    """Resolve a persisted approval and resume exactly one tool action.
+    """Resolve one durable approval under a fenced execution lease.
 
-    The function deliberately does not auto-retry a run found in `executing`.
-    An `executing` run with no durably recorded successful result moves to
-    `recovery_required`. If a verified executed result is already durable for a
-    bounded loop, Manager can instead reconstruct `continuation_ready` without
-    executing the tool again.
+    Consequential execution requires a coordinated store. The original request
+    ID is also the durable operation ID, so retries and worker reassignment do
+    not mint a new external-operation identity merely because a response was
+    lost. A previously ``started`` or ``outcome_unknown`` operation is never
+    executed again automatically. A ``confirmed`` operation may be replayed
+    only as local evidence; the external tool is not called again.
     """
     if success_status not in {"completed", "running"}:
         raise RunStateError("success_status must be completed or running")
     if not isinstance(current_authorization, dict):
         raise RunStateError("current authorization must be an object")
 
-    state = store.load(run_id)
-    if state is None:
-        raise RunStateError(f"unknown run: {run_id}")
-
-    if state["status"] == "executing":
-        if success_status == "running":
-            recorded = _recover_recorded_loop_execution(store, state, registry)
-            if recorded is not None:
-                return recorded
-        recovery = deepcopy(state)
-        recovery["status"] = "recovery_required"
-        recovery["recovery_reason"] = (
-            "Run was interrupted after durable execution intent was recorded. "
-            "Do not retry the external action automatically; reconcile its real outcome first."
-        )
-        recovery["revision"] = state["revision"] + 1
-        recovery["updated_at"] = _now()
-        return store.compare_and_swap(run_id, state["revision"], recovery)
-
-    if state["status"] != "waiting_approval":
-        raise RunStateError(f"run is not waiting for approval: {state['status']}")
-
-    pending = state.get("pending_action")
-    if not isinstance(pending, dict):
-        raise RunStateError("waiting run is missing pending_action")
-    stored_request = pending["tool_request"]
-    request = deepcopy(current_request or stored_request)
-    approval = pending["approval"]
-
-    if approval.get("status") != "pending":
-        raise RunStateError(
-            "pending approval packet is no longer fresh; create a new approval checkpoint"
-        )
-    if decision.get("approval_id") != approval.get("approval_id"):
-        raise RunStateError("approval decision does not match the pending approval")
-    if decision.get("decision") not in {"approved", "rejected"}:
-        raise RunStateError("approval decision must be approved or rejected")
-    if not decision.get("decided_by") or not decision.get("decided_at"):
-        raise RunStateError("approval decision requires decided_by and decided_at")
-
-    if tool_request_fingerprint(request) != tool_request_fingerprint(stored_request):
-        return _mark_stale(
-            store,
-            state,
-            "The requested tool target or arguments changed after the approval checkpoint.",
-        )
-
-    registered = registry.get(request["tool_name"])
-    if registered is None:
-        return _mark_stale(store, state, "The registered tool is no longer available.")
-    if (
-        tool_definition_fingerprint(registered.definition)
-        != pending["tool_definition_fingerprint"]
-    ):
-        return _mark_stale(
-            store,
-            state,
-            "The registered tool definition or version changed after the approval checkpoint.",
-        )
-
-    resolved = deepcopy(approval)
-    resolved["status"] = decision["decision"]
-    resolved["resolved_at"] = decision["decided_at"]
-    resolved["resolved_by"] = decision["decided_by"]
-    resolved["approved_by"] = (
-        decision["decided_by"] if decision["decision"] == "approved" else None
+    coordinated = require_coordinated_store(store)
+    owner_id = _worker_identity(worker_id)
+    lease = coordinated.acquire_lease(
+        run_id, owner_id, ttl_seconds=lease_ttl_seconds
     )
 
-    if decision["decision"] == "rejected":
-        cancelled = deepcopy(state)
-        cancelled["status"] = "cancelled"
-        cancelled["pending_action"]["approval"] = resolved
-        cancelled["revision"] = state["revision"] + 1
-        cancelled["updated_at"] = _now()
-        return store.compare_and_swap(run_id, state["revision"], cancelled)
+    try:
+        state = coordinated.load(run_id)
+        if state is None:
+            raise RunStateError(f"unknown run: {run_id}")
 
-    side_effect_class = registered.definition["side_effect_class"]
-    scope_authorized = _authorization_flag(current_authorization, "scope_authorized")
-    target_verified = _authorization_flag(current_authorization, "target_verified")
-    _authorization_flag(current_authorization, "human_intent_confirmed")
+        if state["status"] == "executing":
+            if success_status == "running":
+                recorded = _recover_recorded_loop_execution(
+                    coordinated, state, registry, lease=lease
+                )
+                if recorded is not None:
+                    return recorded
+            request = _pending_request(state)
+            operation = coordinated.load_operation(request["request_id"])
+            return _reuse_existing_operation(
+                coordinated,
+                state,
+                registry,
+                operation,
+                lease=lease,
+                success_status=success_status,
+            )
 
-    if side_effect_class != "analysis" and not scope_authorized:
-        raise RunStateError("current scope authorization is required before resume")
-    if (
-        side_effect_class in {"external_commitment", "sensitive_destructive"}
-        and request.get("target")
-        and not target_verified
-    ):
-        raise RunStateError("current target verification is required before resume")
+        if state["status"] != "waiting_approval":
+            raise RunStateError(f"run is not waiting for approval: {state['status']}")
 
-    executing = deepcopy(state)
-    executing["status"] = "executing"
-    executing["pending_action"]["approval"] = resolved
-    executing["revision"] = state["revision"] + 1
-    executing["updated_at"] = _now()
-    executing = store.compare_and_swap(run_id, state["revision"], executing)
+        pending = state.get("pending_action")
+        if not isinstance(pending, dict):
+            raise RunStateError("waiting run is missing pending_action")
+        stored_request = pending["tool_request"]
+        request = deepcopy(current_request or stored_request)
+        approval = pending["approval"]
 
-    authorization = _safe_authorization_context(current_authorization)
-    authorization["approval"] = resolved
-    result = execute_tool_request(executing["task"], request, registry, authorization)
+        if approval.get("status") != "pending":
+            raise RunStateError(
+                "pending approval packet is no longer fresh; create a new approval checkpoint"
+            )
+        if decision.get("approval_id") != approval.get("approval_id"):
+            raise RunStateError("approval decision does not match the pending approval")
+        if decision.get("decision") not in {"approved", "rejected"}:
+            raise RunStateError("approval decision must be approved or rejected")
+        if not decision.get("decided_by") or not decision.get("decided_at"):
+            raise RunStateError("approval decision requires decided_by and decided_at")
 
-    final_state = deepcopy(executing)
-    final_state["last_tool_result"] = result
-    final_state["revision"] = executing["revision"] + 1
-    final_state["updated_at"] = _now()
-    synthetic_running_view = False
-    if result["status"] == "executed":
-        if success_status == "running":
-            # Keep the persisted record in `executing` until the outer loop CAS
-            # writes continuation_ready. This makes a crash in that small window
-            # distinguishable from an unknown external outcome.
-            final_state["status"] = "executing"
-            synthetic_running_view = True
+        if tool_request_fingerprint(request) != tool_request_fingerprint(stored_request):
+            return _fenced_mark_stale(
+                coordinated,
+                state,
+                "The requested tool target or arguments changed after the approval checkpoint.",
+                lease=lease,
+            )
+
+        registered = registry.get(request["tool_name"])
+        if registered is None:
+            return _fenced_mark_stale(
+                coordinated,
+                state,
+                "The registered tool is no longer available.",
+                lease=lease,
+            )
+        if (
+            tool_definition_fingerprint(registered.definition)
+            != pending["tool_definition_fingerprint"]
+        ):
+            return _fenced_mark_stale(
+                coordinated,
+                state,
+                "The registered tool definition or version changed after the approval checkpoint.",
+                lease=lease,
+            )
+
+        resolved = deepcopy(approval)
+        resolved["status"] = decision["decision"]
+        resolved["resolved_at"] = decision["decided_at"]
+        resolved["resolved_by"] = decision["decided_by"]
+        resolved["approved_by"] = (
+            decision["decided_by"] if decision["decision"] == "approved" else None
+        )
+
+        if decision["decision"] == "rejected":
+            cancelled = deepcopy(state)
+            cancelled["status"] = "cancelled"
+            cancelled["pending_action"]["approval"] = resolved
+            cancelled["revision"] = state["revision"] + 1
+            cancelled["updated_at"] = _now()
+            return coordinated.fenced_compare_and_swap(
+                run_id, state["revision"], cancelled, lease=lease
+            )
+
+        side_effect_class = registered.definition["side_effect_class"]
+        scope_authorized = _authorization_flag(
+            current_authorization, "scope_authorized"
+        )
+        target_verified = _authorization_flag(
+            current_authorization, "target_verified"
+        )
+        _authorization_flag(current_authorization, "human_intent_confirmed")
+
+        if side_effect_class != "analysis" and not scope_authorized:
+            raise RunStateError("current scope authorization is required before resume")
+        if (
+            side_effect_class in {"external_commitment", "sensitive_destructive"}
+            and request.get("target")
+            and not target_verified
+        ):
+            raise RunStateError("current target verification is required before resume")
+
+        executing = deepcopy(state)
+        executing["status"] = "executing"
+        executing["pending_action"]["approval"] = resolved
+        executing["revision"] = state["revision"] + 1
+        executing["updated_at"] = _now()
+        executing = coordinated.fenced_compare_and_swap(
+            run_id, state["revision"], executing, lease=lease
+        )
+
+        operation = coordinated.begin_operation(
+            lease=lease,
+            operation_id=request["request_id"],
+            request_fingerprint=tool_request_fingerprint(request),
+        )
+        if not operation.claimed:
+            return _reuse_existing_operation(
+                coordinated,
+                executing,
+                registry,
+                operation,
+                lease=lease,
+                success_status=success_status,
+            )
+
+        authorization = _safe_authorization_context(current_authorization)
+        authorization["approval"] = resolved
+
+        # The execution guard spans only the actual adapter/verification call.
+        # For SQLite it holds local writer ownership, preventing another process
+        # from transferring the lease or resolving recovery while this worker is
+        # actively in the uncertain side-effect window.
+        with coordinated.execution_guard(lease, ttl_seconds=lease_ttl_seconds):
+            result = execute_tool_request(
+                executing["task"], request, registry, authorization
+            )
+
+        if result["status"] == "executed":
+            coordinated.finish_operation(
+                operation,
+                lease=lease,
+                status="confirmed",
+                result=result,
+            )
+            return _persist_confirmed_operation(
+                coordinated,
+                executing,
+                result,
+                lease=lease,
+                success_status=success_status,
+            )
+
+        if result["status"] == "failed":
+            # Once the adapter was invoked, a failure response does not prove the
+            # real-world side effect did not happen. Verification failure is also
+            # evidence of uncertainty, not permission to retry.
+            coordinated.finish_operation(
+                operation,
+                lease=lease,
+                status="outcome_unknown",
+                result=result,
+            )
+            return _recovery_required(
+                coordinated,
+                executing,
+                lease=lease,
+                reason=(
+                    "Consequential tool execution did not produce a verified outcome. "
+                    "The external effect may have occurred; do not retry automatically."
+                ),
+                last_tool_result=result,
+            )
+
+        coordinated.finish_operation(
+            operation,
+            lease=lease,
+            status="not_executed",
+            result=result,
+        )
+        final_state = deepcopy(executing)
+        final_state["last_tool_result"] = deepcopy(result)
+        final_state["revision"] = executing["revision"] + 1
+        final_state["updated_at"] = _now()
+        if result["status"] == "approval_required":
+            final_state["status"] = "waiting_approval"
+            final_state["pending_action"]["approval"] = result["approval"]
         else:
-            final_state["status"] = "completed"
+            final_state["status"] = "failed"
             final_state["pending_action"] = None
-    elif result["status"] == "approval_required":
-        final_state["status"] = "waiting_approval"
-        final_state["pending_action"]["approval"] = result["approval"]
-    else:
-        final_state["status"] = "failed"
-        final_state["pending_action"] = None
-    persisted = store.compare_and_swap(run_id, executing["revision"], final_state)
-
-    if synthetic_running_view:
-        # The existing outer-loop checkpoint path expects a running state. Return
-        # that transient view while leaving the durable row safely marked until
-        # its next CAS commits continuation_ready.
-        returned = deepcopy(persisted)
-        returned["status"] = "running"
-        return returned
-    return persisted
+        return coordinated.fenced_compare_and_swap(
+            run_id, executing["revision"], final_state, lease=lease
+        )
+    finally:
+        try:
+            coordinated.release_lease(lease)
+        except RunStateError:
+            # A stale worker must not mask the primary result merely because its
+            # lease expired or was fenced off while unwinding.
+            pass
