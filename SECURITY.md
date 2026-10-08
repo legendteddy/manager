@@ -67,15 +67,29 @@ Consequential tools must declare an application-owned version and require post-e
 
 Provider-executed built-in tools or provider-managed MCP tools are not enabled in the reference path. Custom function calls are normalized into proposals so Manager can evaluate them before application-owned execution. Future provider-managed tool support must preserve an equivalent policy and approval boundary.
 
+## Bounded agent loops
+
+Multi-step execution is a fresh policy decision at every step, not a standing grant of autonomy.
+
+The Stage 7 reference loop requires finite model-step and tool-call budgets, blocks exact repeated tool actions before re-execution, and refuses to partially execute a provider batch that exceeds the remaining tool-call budget.
+
+Approval is not reusable loop state. Any approval object supplied in reusable authorization context is discarded before a newly proposed action is evaluated. A new consequential action must satisfy its own current authorization and approval requirements.
+
+Only executed tool results are eligible for continuation. Outputs marked sensitive by the trusted registry are withheld from the model, and non-sensitive serialized results are bounded in size before provider continuation.
+
+Loop termination does not prove the external objective succeeded. Budget exhaustion, policy blocking, approval interruption, provider incompleteness, execution failure, and loop detection are explicit stop conditions.
+
 ## Durable run state
 
 Durability does not weaken approval freshness.
 
 When a run resumes after interruption, Manager must revalidate the exact action, current tool definition, current scope authorization, and current target verification before execution.
 
-The Stage 6 SQLite adapter persists execution state but is not an encryption boundary or a secret store. Embedding applications are responsible for appropriate filesystem/database access controls, encryption at rest, backup, retention, and regulatory requirements.
+The SQLite adapter persists execution state but is not an encryption boundary or a secret store. Embedding applications are responsible for appropriate filesystem/database access controls, encryption at rest, backup, retention, and regulatory requirements.
 
 Manager persists an `executing` checkpoint before a resumed consequential side effect. If a later process finds that state without a recorded terminal result, it must not automatically retry the external action. The reference runtime changes the state to `recovery_required` so the real external outcome can be reconciled first.
+
+Stage 7 does not yet persist and resume an entire model/tool loop across an approval interruption.
 
 ## Secrets
 
@@ -98,7 +112,7 @@ Repository integrity checks may detect some high-confidence leakage patterns, bu
 
 Record enough to reconstruct what happened without recording hidden chain-of-thought or unnecessary sensitive content. Useful traces may include run/correlation ID, selected workflow, activated capabilities and purpose, tool actions and outcomes at a non-sensitive level, approvals, reconciliation classification, verification result, final status, and material uncertainty.
 
-Do not place raw sensitive tool arguments, outputs, or durable state snapshots into public traces merely for debugging convenience.
+Do not place raw sensitive tool arguments, outputs, durable state snapshots, or model continuation payloads into public traces merely for debugging convenience.
 
 ## Vulnerability reporting
 
@@ -106,4 +120,4 @@ A dedicated private vulnerability-reporting channel has not yet been established
 
 ## Security maturity
 
-Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, and recovery-required handling after interrupted execution intent. These controls are tested in CI but have not been independently security-audited and do not establish production readiness, production sandboxing, credential safety, encrypted state handling, exactly-once side effects, or safe autonomous production side effects.
+Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, recovery-required handling after interrupted execution intent, finite multi-step budgets, repeated-action loop detection, and sensitive-result withholding before continuation. These controls are tested in CI but have not been independently security-audited and do not establish production readiness, production sandboxing, credential safety, encrypted state handling, exactly-once side effects, durable whole-loop recovery, or safe autonomous production side effects.
