@@ -120,6 +120,44 @@ class SQLiteMixedRuntimeTests(unittest.TestCase):
         with self.assertRaises(RunStateError):
             SQLiteRunStore(self.path)
 
+    def test_same_named_but_ineffective_guard_trigger_is_rejected(self) -> None:
+        SQLiteRunStore(self.path)
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute("DROP TRIGGER manager_runs_runtime_guard_update")
+            connection.execute(
+                """
+                CREATE TRIGGER manager_runs_runtime_guard_update
+                BEFORE UPDATE ON manager_runs
+                BEGIN
+                    SELECT 1;
+                END
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(RunStateError):
+            SQLiteRunStore(self.path)
+
+    def test_corrupted_required_table_shape_is_rejected_on_open(self) -> None:
+        SQLiteRunStore(self.path)
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute(
+                "ALTER TABLE manager_operations RENAME TO manager_operations_corrupt_backup"
+            )
+            connection.execute(
+                "CREATE TABLE manager_operations(operation_id TEXT PRIMARY KEY)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        with self.assertRaises(RunStateError):
+            SQLiteRunStore(self.path)
+
 
 if __name__ == "__main__":
     unittest.main()
