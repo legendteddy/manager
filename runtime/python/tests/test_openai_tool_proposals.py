@@ -13,7 +13,7 @@ class FakeResponses:
     def create(self, **kwargs):
         self.calls.append(kwargs)
         return SimpleNamespace(
-            id="resp_tool_test",
+            id=f"resp_tool_test_{len(self.calls)}",
             model=kwargs["model"],
             status="completed",
             output_text="",
@@ -24,7 +24,7 @@ class FakeResponses:
                     name="lookup",
                     arguments='{"value":"synthetic"}',
                 )
-            ],
+            ] if len(self.calls) == 1 else [],
             usage=SimpleNamespace(input_tokens=7, output_tokens=3, total_tokens=10),
         )
 
@@ -64,6 +64,40 @@ class OpenAIToolProposalTests(unittest.TestCase):
         self.assertEqual(response["tool_proposals"][0]["proposal_id"], "call_123")
         self.assertEqual(response["tool_proposals"][0]["tool_name"], "lookup")
         self.assertEqual(response["tool_proposals"][0]["arguments"], {"value": "synthetic"})
+
+    def test_continuation_uses_previous_response_and_function_call_output(self) -> None:
+        client = FakeClient()
+        adapter = OpenAIResponsesAdapter(client=client)
+        adapter.generate(
+            {
+                "request_id": "request:continuation",
+                "model": "synthetic-model",
+                "input": "Continue with verified tool results.",
+                "continuation": {
+                    "prior_response_ref": "resp_prior",
+                    "tool_results": [
+                        {
+                            "proposal_id": "call_123",
+                            "status": "executed",
+                            "output": "{\"value\":\"synthetic-result\"}",
+                            "redacted": False,
+                        }
+                    ],
+                },
+            }
+        )
+        sent = client.responses.calls[0]
+        self.assertEqual(sent["previous_response_id"], "resp_prior")
+        self.assertEqual(
+            sent["input"],
+            [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_123",
+                    "output": "{\"value\":\"synthetic-result\"}",
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":
