@@ -5,8 +5,11 @@ It is not the canonical architecture definition and does not imply production re
 """
 
 from .agent_loop import run_bounded_agent_loop
+from .capacity import CapacityLimits, CheckpointTooLarge, OverloadedError
 from .engine import run
 from .mcp import OfficialMCPClient, register_mcp_bindings
+from .observability import InMemoryTelemetrySink, JsonLoggingSink, SafeTelemetry
+from .operations import ObservedModelAdapter, ObservedRunStore, OperationalRuntime
 from .orchestrator import run_with_model, run_with_model_and_tools
 from .state import (
     resolve_recovery_required,
@@ -27,4 +30,13 @@ __all__ = [
     "OfficialMCPClient",
     "ToolRegistry",
     "execute_tool_request",
+    "CapacityLimits",
+    "CheckpointTooLarge",
+    "OverloadedError",
+    "SafeTelemetry",
+    "InMemoryTelemetrySink",
+    "JsonLoggingSink",
+    "OperationalRuntime",
+    "ObservedModelAdapter",
+    "ObservedRunStore",
 ]
