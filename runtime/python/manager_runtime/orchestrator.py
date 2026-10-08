@@ -4,7 +4,7 @@ from typing import Any
 
 from .engine import run as run_control_plane
 from .providers.base import ModelAdapter, ModelPayload, validate_model_response
-from .tools.base import ToolRegistry
+from .tools.base import CONSEQUENTIAL_CLASSES, ToolRegistry, tool_request_fingerprint
 from .tools.runtime import execute_tool_request
 
 MODEL_INSTRUCTIONS = (
@@ -112,6 +112,43 @@ def run_with_model(
     return output
 
 
+def _one_shot_block(
+    output: dict[str, Any],
+    requests: list[dict[str, Any]],
+    reason: str,
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    trace = output["trace"]
+    for request in requests:
+        result = {
+            "request_id": request["request_id"],
+            "tool_name": request["tool_name"],
+            "status": "blocked",
+            "side_effect_class": "analysis",
+            "decision_reason": reason,
+            "verification": {"status": "not_required", "details": ""},
+            "approval_ref": None,
+            "error": None,
+            "redacted": False,
+        }
+        results.append(result)
+        trace["events"].append(
+            {
+                "event_type": "tool",
+                "status": "blocked",
+                "reference": request["request_id"],
+                "summary": f"One-shot tool batch was blocked before execution: {reason}.",
+            }
+        )
+    output["tool_results"] = results
+    trace["status"] = "blocked"
+    output["result"]["status"] = "blocked"
+    output["result"]["uncertainties"] = [
+        f"Tool proposal batch was blocked before execution: {reason}."
+    ]
+    return output
+
+
 def run_with_model_and_tools(
     task_input: dict[str, Any],
     adapter: ModelAdapter,
@@ -127,6 +164,12 @@ def run_with_model_and_tools(
 
     Stage 5 executes proposals once and records their results. It intentionally
     does not send tool outputs back to the model for a continuation turn.
+
+    The complete proposal batch is preflighted before any execution. Exact
+    duplicate actions are rejected and any batch containing a consequential
+    action must be serialized through a later bounded/durable workflow. Approval
+    objects supplied in reusable authorization context are discarded because a
+    model proposal is not allowed to inherit prior approval authority.
     """
     definitions = registry.model_definitions(allowed_tools)
     output = run_with_model(
@@ -150,8 +193,10 @@ def run_with_model_and_tools(
     authorization_contexts = authorization_contexts or {}
     task = task_input["task"]
     trace = output["trace"]
-    results: list[dict[str, Any]] = []
 
+    prepared: list[dict[str, Any]] = []
+    fingerprints: set[str] = set()
+    consequential = False
     for proposal in proposals:
         tool_name = proposal["tool_name"]
         request = {
@@ -163,7 +208,34 @@ def run_with_model_and_tools(
             "proposed_by": "model",
             "proposal_ref": proposal["proposal_id"],
         }
+        fingerprint = tool_request_fingerprint(request)
+        if fingerprint in fingerprints:
+            return _one_shot_block(
+                output,
+                prepared + [request],
+                "repeated_tool_proposal",
+            )
+        fingerprints.add(fingerprint)
+        prepared.append(request)
 
+        registered = registry.get(tool_name)
+        if (
+            tool_name in allowed
+            and registered is not None
+            and registered.definition["side_effect_class"] in CONSEQUENTIAL_CLASSES
+        ):
+            consequential = True
+
+    if len(prepared) > 1 and consequential:
+        return _one_shot_block(
+            output,
+            prepared,
+            "consequential_multi_tool_batch_requires_serialization",
+        )
+
+    results: list[dict[str, Any]] = []
+    for request in prepared:
+        tool_name = request["tool_name"]
         if tool_name not in allowed:
             result = {
                 "request_id": request["request_id"],
@@ -178,6 +250,7 @@ def run_with_model_and_tools(
             }
         else:
             context = dict(authorization_contexts.get(tool_name, {}))
+            context.pop("approval", None)
             registered = registry.get(tool_name)
             if registered is not None and registered.definition["side_effect_class"] in {
                 "analysis",
