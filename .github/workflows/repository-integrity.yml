@@ -8,9 +8,58 @@ permissions:
   contents: read
 
 jobs:
-  public-safety:
+  python-compatibility:
+    name: Python ${{ matrix.python-version }} compatibility
     runs-on: ubuntu-24.04
     timeout-minutes: 7
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - name: Check out event revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile reference runtime
+        shell: bash
+        run: python -m compileall -q runtime/python scripts/schema_conformance.py scripts/build_release_candidate.py
+
+      - name: Run unit tests
+        shell: bash
+        run: PYTHONPATH=runtime/python python -m unittest discover -s runtime/python/tests -v
+
+      - name: Run deterministic behavioral evals
+        shell: bash
+        run: PYTHONPATH=runtime/python python -m manager_runtime.evals evals/cases
+
+      - name: Build and import wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/manager-wheel /tmp/manager-install
+          mkdir -p /tmp/manager-wheel /tmp/manager-install
+          python -m pip wheel --disable-pip-version-check --no-deps --wheel-dir /tmp/manager-wheel runtime/python
+          python -m pip install --disable-pip-version-check --no-deps --target /tmp/manager-install /tmp/manager-wheel/*.whl
+          PYTHONPATH=/tmp/manager-install python - <<'PY'
+          import manager_runtime
+          assert manager_runtime.__all__
+          PY
+
+  public-safety:
+    needs: python-compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Check out event revision
         shell: bash
@@ -27,7 +76,7 @@ jobs:
 
       - name: Compile Python reference runtime
         shell: bash
-        run: python3 -m compileall -q runtime/python scripts/schema_conformance.py
+        run: python3 -m compileall -q runtime/python scripts/schema_conformance.py scripts/build_release_candidate.py
 
       - name: Run Python reference runtime unit tests
         shell: bash
@@ -37,30 +86,32 @@ jobs:
         shell: bash
         run: PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
 
-      - name: Install schema conformance dependency
+      - name: Install known-good release dependency baseline
         shell: bash
-        run: python3 -m pip install --disable-pip-version-check --quiet 'jsonschema>=4.23,<5'
+        run: |
+          python3 -m pip install --disable-pip-version-check --quiet --upgrade \
+            'pip==26.2.1' \
+            'setuptools==84.0.0' \
+            'build==1.6.1' \
+            'jsonschema==4.26.0' \
+            'openai==3.26.0' \
+            'mcp==2.3.0'
 
       - name: Validate contracts and emitted runtime artifacts
         shell: bash
         run: PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
 
-      - name: Build and import Python distribution
+      - name: Build reproducible release candidate twice
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf /tmp/manager-wheel /tmp/manager-install
-          mkdir -p /tmp/manager-wheel /tmp/manager-install
-          python3 -m pip wheel --disable-pip-version-check --no-deps --wheel-dir /tmp/manager-wheel runtime/python
-          python3 -m pip install --disable-pip-version-check --no-deps --target /tmp/manager-install /tmp/manager-wheel/*.whl
-          PYTHONPATH=/tmp/manager-install python3 - <<'PY'
+          python3 scripts/build_release_candidate.py --output /tmp/manager-rc-a
+          python3 scripts/build_release_candidate.py --output /tmp/manager-rc-b --compare-to /tmp/manager-rc-a
+          python3 -m pip install --disable-pip-version-check --no-deps --target /tmp/manager-rc-install /tmp/manager-rc-a/artifacts/*.whl
+          PYTHONPATH=/tmp/manager-rc-install python3 - <<'PY'
           import manager_runtime
           assert manager_runtime.__all__
           PY
-
-      - name: Install optional MCP transport dependency
-        shell: bash
-        run: python3 -m pip install --disable-pip-version-check --quiet -e 'runtime/python[mcp]'
 
       - name: Run MCP stdio transport conformance
         shell: bash
