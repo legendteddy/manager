@@ -1,0 +1,20 @@
+{
+  "server_id": "synthetic-catalog",
+  "remote_tool_name": "lookup_item",
+  "local_definition": {
+    "name": "catalog.lookup",
+    "description": "Look up a synthetic public catalog item.",
+    "side_effect_class": "read",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string"}
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    },
+    "requires_verification": false,
+    "sensitive_output": false
+  },
+  "enabled": true
+}
