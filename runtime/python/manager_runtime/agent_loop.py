@@ -358,9 +358,27 @@ def run_bounded_agent_loop(
         if max_output_tokens is not None:
             request["max_output_tokens"] = max_output_tokens
 
-        response = adapter.generate(request)
-        validate_model_response(response)
-        model_steps += 1
+        attempted_step = model_steps + 1
+        try:
+            response = adapter.generate(request)
+            validate_model_response(response, expected_provider=adapter.provider)
+        except Exception:
+            trace["events"].append(
+                {
+                    "event_type": "model",
+                    "status": "failed",
+                    "reference": adapter.provider,
+                    "summary": "Bounded model continuation failed at the provider boundary.",
+                }
+            )
+            return _set_stop(
+                output,
+                reason="model_provider_boundary_failed",
+                status="failed",
+                model_steps=attempted_step,
+                tool_calls=tool_calls,
+            )
+        model_steps = attempted_step
         trace["events"].append(_model_trace_event(response, model_steps))
         capability = f"model-provider:{response['provider']}"
         if capability not in trace["capabilities"]:
