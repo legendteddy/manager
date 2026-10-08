@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+from ..security import SecurityBoundaryError, evaluate_tool_authorization
 from ..tools.base import ToolRegistry, tool_definition_fingerprint, tool_request_fingerprint
 from ..tools.runtime import execute_tool_request
 from .base import RunState, RunStateError, RunStore
@@ -212,6 +213,27 @@ def _mark_stale(store: RunStore, state: RunState, reason: str) -> RunState:
     return store.compare_and_swap(state["run_id"], state["revision"], replacement)
 
 
+def _current_scope_authorized(
+    current_authorization: dict[str, Any],
+    request: dict[str, Any],
+    definition: dict[str, Any],
+) -> bool:
+    """Resolve current scope without letting approval substitute for authorization."""
+    try:
+        security_decision = evaluate_tool_authorization(
+            current_authorization, request, definition
+        )
+    except SecurityBoundaryError as exc:
+        raise RunStateError(
+            f"current security authorization is invalid: {exc.code}"
+        ) from exc
+    if security_decision is not None:
+        if not security_decision.get("allowed"):
+            raise RunStateError("current security authorization is required before resume")
+        return True
+    return _authorization_flag(current_authorization, "scope_authorized")
+
+
 def resume_tool_approval(
     store: RunStore,
     run_id: str,
@@ -229,6 +251,12 @@ def resume_tool_approval(
     `recovery_required`. If a verified executed result is already durable for a
     bounded loop, Manager can instead reconstruct `continuation_ready` without
     executing the tool again.
+
+    Strict security context is never restored from durable state. The embedding
+    application must supply current identity and policy again on resume. Manager
+    evaluates that context before changing state and passes it through to the
+    tool runtime, where the approval's authorization binding is revalidated
+    immediately before execution.
     """
     if success_status not in {"completed", "running"}:
         raise RunStateError("success_status must be completed or running")
@@ -312,7 +340,9 @@ def resume_tool_approval(
         return store.compare_and_swap(run_id, state["revision"], cancelled)
 
     side_effect_class = registered.definition["side_effect_class"]
-    scope_authorized = _authorization_flag(current_authorization, "scope_authorized")
+    scope_authorized = _current_scope_authorized(
+        current_authorization, request, registered.definition
+    )
     target_verified = _authorization_flag(current_authorization, "target_verified")
     _authorization_flag(current_authorization, "human_intent_confirmed")
 
@@ -332,7 +362,13 @@ def resume_tool_approval(
     executing["updated_at"] = _now()
     executing = store.compare_and_swap(run_id, state["revision"], executing)
 
-    authorization = _safe_authorization_context(current_authorization)
+    # Do not sanitize the in-memory current authorization before execution. The
+    # durable snapshot is already deliberately sanitized by
+    # _safe_authorization_context(); stripping here would remove the fresh
+    # principal/policy needed to prove that an old approval is still authorized.
+    authorization = dict(current_authorization)
+    if evaluate_tool_authorization(authorization, request, registered.definition) is not None:
+        authorization["scope_authorized"] = True
     authorization["approval"] = resolved
     result = execute_tool_request(executing["task"], request, registry, authorization)
 
