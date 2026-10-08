@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from manager_runtime.security import (
+    ChainedSecretProvider,
     EnvironmentSecretProvider,
     HS256JWTValidator,
     JWTValidationConfig,
@@ -24,18 +25,27 @@ from manager_runtime.security import (
 )
 
 NOW = 2_000_000_000.0
+SYNTHETIC_KEY = b"synthetic-test-signing-key-32-bytes!!"
 
 
 def b64(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
 
-def token(secret: bytes, claims: dict, *, alg: str = "HS256") -> str:
+def raw_token(secret: bytes, claims_json: bytes, *, alg: str = "HS256") -> str:
     header = {"alg": alg, "typ": "JWT", "kid": "primary"}
     a = b64(json.dumps(header, separators=(",", ":")).encode())
-    b = b64(json.dumps(claims, separators=(",", ":")).encode())
+    b = b64(claims_json)
     signature = hmac.new(secret, f"{a}.{b}".encode("ascii"), hashlib.sha256).digest()
     return f"{a}.{b}.{b64(signature)}"
+
+
+def token(secret: bytes, claims: dict, *, alg: str = "HS256") -> str:
+    return raw_token(
+        secret,
+        json.dumps(claims, separators=(",", ":")).encode(),
+        alg=alg,
+    )
 
 
 class DictProvider:
@@ -50,12 +60,22 @@ class DictProvider:
         return SecretLease(self.values[name])
 
 
+class RaisingProvider:
+    def acquire(self, name: str) -> SecretLease:
+        raise RuntimeError("Authorization: Bearer synthetic-provider-secret")
+
+
 class Revocations:
     def __init__(self, revoked: set[str]) -> None:
         self.revoked = revoked
 
     def is_revoked(self, identity: dict) -> bool:
         return identity.get("token_id") in self.revoked
+
+
+class RaisingRevocations:
+    def is_revoked(self, identity: dict) -> bool:
+        raise RuntimeError("Bearer synthetic-revocation-backend-secret")
 
 
 class SecurityTests(unittest.TestCase):
@@ -75,7 +95,7 @@ class SecurityTests(unittest.TestCase):
         return result
 
     def validator(self, provider=None, revocations=None):
-        provider = provider or DictProvider({"jwt-primary": b"synthetic-secret"})
+        provider = provider or DictProvider({"jwt-primary": SYNTHETIC_KEY})
         return HS256JWTValidator(
             JWTValidationConfig(
                 issuers=frozenset({"https://issuer.example"}),
@@ -91,7 +111,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_valid_token_authenticates_without_granting_authorization(self):
         identity = self.validator().validate(
-            token(b"synthetic-secret", self.claims()), principal_type="worker"
+            token(SYNTHETIC_KEY, self.claims()), principal_type="worker"
         )
         self.assertEqual("worker-17", identity["subject"])
         self.assertEqual(["project.view", "tools.read"], identity["capabilities"])
@@ -107,23 +127,23 @@ class SecurityTests(unittest.TestCase):
         self.assertFalse(decision["allowed"])
 
     def test_expired_identity_rejected(self):
-        jwt = token(b"synthetic-secret", self.claims(exp=NOW))
+        jwt = token(SYNTHETIC_KEY, self.claims(exp=NOW))
         with self.assertRaisesRegex(SecurityBoundaryError, "identity_expired"):
             self.validator().validate(jwt)
 
     def test_invalid_audience_rejected(self):
-        jwt = token(b"synthetic-secret", self.claims(aud="other-service"))
+        jwt = token(SYNTHETIC_KEY, self.claims(aud="other-service"))
         with self.assertRaisesRegex(SecurityBoundaryError, "identity_audience_rejected"):
             self.validator().validate(jwt)
 
     def test_invalid_issuer_rejected(self):
-        jwt = token(b"synthetic-secret", self.claims(iss="https://evil.example"))
+        jwt = token(SYNTHETIC_KEY, self.claims(iss="https://evil.example"))
         with self.assertRaisesRegex(SecurityBoundaryError, "identity_issuer_rejected"):
             self.validator().validate(jwt)
 
     def test_wrong_service_identity_denied_by_principal_type(self):
         identity = self.validator().validate(
-            token(b"synthetic-secret", self.claims()), principal_type="model_provider"
+            token(SYNTHETIC_KEY, self.claims()), principal_type="model_provider"
         )
         decision = evaluate_tool_authorization(
             {
@@ -151,7 +171,7 @@ class SecurityTests(unittest.TestCase):
 
     def test_forged_capability_does_not_match_policy(self):
         identity = self.validator().validate(
-            token(b"synthetic-secret", self.claims(scope="tools.fake")),
+            token(SYNTHETIC_KEY, self.claims(scope="tools.fake")),
             principal_type="worker",
         )
         decision = evaluate_tool_authorization(
@@ -177,7 +197,7 @@ class SecurityTests(unittest.TestCase):
         self.assertFalse(decision["allowed"])
 
     def test_tampered_capability_signature_rejected(self):
-        original = token(b"synthetic-secret", self.claims(scope="tools.read"))
+        original = token(SYNTHETIC_KEY, self.claims(scope="tools.read"))
         head, _, signature = original.split(".")
         claims = self.claims(scope="tools.write")
         tampered_body = b64(json.dumps(claims, separators=(",", ":")).encode())
@@ -185,9 +205,55 @@ class SecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(SecurityBoundaryError, "identity_signature_invalid"):
             self.validator().validate(tampered)
 
+    def test_duplicate_json_claim_is_rejected_as_ambiguous(self):
+        claims = (
+            b'{"iss":"https://issuer.example","aud":"manager-api",'
+            b'"sub":"worker-17","sub":"attacker",'
+            b'"exp":2000000300,"nbf":1999999995,"iat":1999999970,'
+            b'"jti":"token-1","scope":"tools.read"}'
+        )
+        jwt = raw_token(SYNTHETIC_KEY, claims)
+        with self.assertRaisesRegex(SecurityBoundaryError, "identity_claims_malformed"):
+            self.validator().validate(jwt)
+
+    def test_weak_hmac_key_is_rejected_even_with_valid_signature(self):
+        weak = b"short-key"
+        validator = self.validator(provider=DictProvider({"jwt-primary": weak}))
+        jwt = token(weak, self.claims())
+        with self.assertRaisesRegex(SecurityBoundaryError, "identity_signing_key_too_weak"):
+            validator.validate(jwt)
+
+    def test_secret_provider_failure_is_redacted_and_fails_closed(self):
+        validator = self.validator(provider=RaisingProvider())
+        jwt = token(SYNTHETIC_KEY, self.claims())
+        with self.assertRaises(SecurityBoundaryError) as caught:
+            validator.validate(jwt)
+        self.assertEqual("credential_lookup_failed", caught.exception.code)
+        self.assertEqual("RuntimeError", caught.exception.error_type)
+        self.assertNotIn("synthetic-provider-secret", str(caught.exception))
+
+    def test_revocation_backend_failure_is_redacted_and_fails_closed(self):
+        jwt = token(SYNTHETIC_KEY, self.claims())
+        with self.assertRaises(SecurityBoundaryError) as caught:
+            self.validator(revocations=RaisingRevocations()).validate(jwt)
+        self.assertEqual("identity_revocation_check_failed", caught.exception.code)
+        self.assertEqual("RuntimeError", caught.exception.error_type)
+        self.assertNotIn("synthetic-revocation-backend-secret", str(caught.exception))
+
+    def test_chain_does_not_fall_back_after_nonavailability_security_failure(self):
+        class DeniedProvider:
+            def acquire(self, name: str) -> SecretLease:
+                raise SecurityBoundaryError("credential_access_denied")
+
+        fallback = DictProvider({"secret": b"would-be-weaker-fallback"})
+        provider = ChainedSecretProvider([DeniedProvider(), fallback])
+        with self.assertRaisesRegex(SecurityBoundaryError, "credential_access_denied"):
+            provider.acquire("secret")
+        self.assertEqual(0, fallback.calls)
+
     def test_authorization_binding_changes_with_policy_and_principal(self):
         identity = self.validator().validate(
-            token(b"synthetic-secret", self.claims(scope="tools.write")),
+            token(SYNTHETIC_KEY, self.claims(scope="tools.write")),
             principal_type="worker",
         )
         auth = {
@@ -215,12 +281,12 @@ class SecurityTests(unittest.TestCase):
         self.assertNotEqual(first["binding"], second["binding"])
 
     def test_revoked_identity_rejected(self):
-        jwt = token(b"synthetic-secret", self.claims(jti="revoked"))
+        jwt = token(SYNTHETIC_KEY, self.claims(jti="revoked"))
         with self.assertRaisesRegex(SecurityBoundaryError, "identity_revoked"):
             self.validator(revocations=Revocations({"revoked"})).validate(jwt)
 
     def test_unsigned_or_wrong_algorithm_rejected(self):
-        jwt = token(b"synthetic-secret", self.claims(), alg="none")
+        jwt = token(SYNTHETIC_KEY, self.claims(), alg="none")
         with self.assertRaisesRegex(SecurityBoundaryError, "identity_algorithm_rejected"):
             self.validator().validate(jwt)
 
