@@ -46,11 +46,11 @@ def safe_identifier(value: Any) -> str | None:
     """Normalize correlation identifiers without invoking arbitrary object code."""
     if value is None:
         return None
-    if isinstance(value, str):
+    if type(value) is str:
         text = value
-    elif isinstance(value, int) and not isinstance(value, bool):
+    elif type(value) is int:
         text = str(value)
-    elif isinstance(value, bytes):
+    elif type(value) is bytes:
         return f"hash:{hashlib.sha256(value).hexdigest()[:20]}"
     else:
         typename = f"{type(value).__module__}.{type(value).__qualname__}"
@@ -61,13 +61,13 @@ def safe_identifier(value: Any) -> str | None:
 
 
 def _safe_key(key: Any) -> str:
-    if isinstance(key, str):
+    if type(key) is str:
         return key[:96]
     return f"<{type(key).__name__}>"
 
 
 def _sensitive_key(key: Any) -> bool:
-    if not isinstance(key, str):
+    if type(key) is not str:
         return False
     normalized = key.strip().lower().replace("-", "_")
     return any(fragment in normalized for fragment in _SECRET_KEY_FRAGMENTS)
@@ -76,8 +76,9 @@ def _sensitive_key(key: Any) -> bool:
 def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> Any:
     """Return a bounded telemetry-safe representation.
 
-    Traversal and retained output are both bounded. Arbitrary object string
-    methods are never invoked. Telemetry is not a debugging dump channel.
+    Traversal and retained output are both bounded. Only concrete built-in
+    containers are traversed so observability never executes application-owned
+    iterator or mapping hooks. Telemetry is not a debugging dump channel.
     """
     if not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth < 0:
         raise ValueError("max_depth must be a non-negative integer")
@@ -87,20 +88,18 @@ def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> An
     def visit(current: Any, depth: int) -> Any:
         if depth > max_depth:
             return "[TRUNCATED_DEPTH]"
-        if current is None or isinstance(current, (bool, int)):
+        if current is None or type(current) in (bool, int):
             return current
-        if isinstance(current, float):
+        if type(current) is float:
             return current if math.isfinite(current) else "[NON_FINITE_NUMBER]"
-        if isinstance(current, str):
-            # Only scan a bounded prefix because text after max_string_chars is
-            # never retained in telemetry anyway.
+        if type(current) is str:
             bounded = current[: max_string_chars + 128]
             text = _BEARER.sub("Bearer [REDACTED]", bounded)
             text = _SECRETISH.sub(_REDACTED, text)
             if len(current) > max_string_chars or len(text) > max_string_chars:
                 return text[:max_string_chars] + "...[TRUNCATED]"
             return text
-        if isinstance(current, Mapping):
+        if type(current) is dict:
             result: dict[str, Any] = {}
             entries = list(islice(current.items(), 65))
             for key, item in entries[:64]:
@@ -109,7 +108,13 @@ def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> An
             if len(entries) > 64:
                 result["_truncated_items"] = True
             return result
-        if isinstance(current, (list, tuple, set, frozenset)):
+        if type(current) in (list, tuple):
+            items = current[:65]
+            result = [visit(item, depth + 1) for item in items[:64]]
+            if len(items) > 64:
+                result.append("[TRUNCATED_ITEMS]")
+            return result
+        if type(current) in (set, frozenset):
             items = list(islice(current, 65))
             result = [visit(item, depth + 1) for item in items[:64]]
             if len(items) > 64:
@@ -121,23 +126,25 @@ def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> An
 
 
 def _safe_label_value(value: Any) -> str:
-    if isinstance(value, str):
+    if type(value) is str:
         return value
     if value is None:
         return "none"
-    if isinstance(value, bool):
+    if type(value) is bool:
         return "true" if value else "false"
-    if isinstance(value, int):
+    if type(value) is int:
         return str(value)
-    if isinstance(value, float) and math.isfinite(value):
+    if type(value) is float and math.isfinite(value):
         return str(value)
     return f"type:{type(value).__name__}"
 
 
 def safe_labels(labels: Mapping[str, Any] | None) -> dict[str, str]:
+    if type(labels) is not dict:
+        return {}
     result: dict[str, str] = {}
-    for key, value in (labels or {}).items():
-        if not isinstance(key, str) or key not in _SAFE_LABEL_KEYS:
+    for key, value in labels.items():
+        if type(key) is not str or key not in _SAFE_LABEL_KEYS:
             continue
         text = _safe_label_value(value)
         if len(text) > 64 or not re.fullmatch(r"[A-Za-z0-9:._/-]+", text):
@@ -157,7 +164,7 @@ class Correlation:
     @classmethod
     def from_values(cls, **values: Any) -> "Correlation":
         revision = values.get("state_revision")
-        if not isinstance(revision, int) or isinstance(revision, bool):
+        if type(revision) is not int:
             revision = None
         return cls(
             request_id=safe_identifier(values.get("request_id")),
@@ -280,8 +287,9 @@ class JsonLoggingSink:
 class SafeTelemetry:
     """Provider-neutral, secret-minimizing telemetry facade.
 
-    Sink failures are swallowed and counted locally. Observability is never an
-    authority source and its failure cannot authorize, mutate, or deadlock work.
+    Sink and sanitization failures are swallowed and counted locally.
+    Observability is never an authority source and its failure cannot
+    authorize, mutate, or deadlock work.
     """
 
     def __init__(self, sink: TelemetrySink | None = None) -> None:
@@ -305,15 +313,14 @@ class SafeTelemetry:
         correlation: Correlation | None = None,
         attributes: Mapping[str, Any] | None = None,
     ) -> None:
-        if not isinstance(name, str) or not _SAFE_EVENT_NAME.fullmatch(name):
-            name = "telemetry.invalid_event_name"
-        safe_attributes = redact(attributes or {})
-        if not isinstance(safe_attributes, dict):
-            safe_attributes = {"value": safe_attributes}
-        event = StructuredEvent(
-            _now(), name, _safe_correlation(correlation), safe_attributes
-        )
         try:
+            safe_name = name if type(name) is str and _SAFE_EVENT_NAME.fullmatch(name) else "telemetry.invalid_event_name"
+            safe_attributes = redact(attributes or {})
+            if not isinstance(safe_attributes, dict):
+                safe_attributes = {"value": safe_attributes}
+            event = StructuredEvent(
+                _now(), safe_name, _safe_correlation(correlation), safe_attributes
+            )
             self.sink.emit_event(event)
         except Exception:
             self._failed()
@@ -323,9 +330,9 @@ class SafeTelemetry:
             raise ValueError("metric kind must be counter, gauge, or histogram")
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
             raise ValueError("metric value must be a finite number")
-        safe_name = name if isinstance(name, str) and _SAFE_METRIC_NAME.fullmatch(name) else "manager_invalid_metric"
-        point = MetricPoint(_now(), safe_name, kind, float(value), safe_labels(labels))
         try:
+            safe_name = name if type(name) is str and _SAFE_METRIC_NAME.fullmatch(name) else "manager_invalid_metric"
+            point = MetricPoint(_now(), safe_name, kind, float(value), safe_labels(labels))
             self.sink.emit_metric(point)
         except Exception:
             self._failed()
@@ -346,12 +353,12 @@ class SafeTelemetry:
             status = "failed"
             raise
         finally:
-            safe_name = name if isinstance(name, str) and _SAFE_EVENT_NAME.fullmatch(name) else "telemetry.invalid_span_name"
-            span = SpanRecord(
-                _now(), safe_name, max(0.0, time.monotonic() - started), status,
-                _safe_correlation(correlation), safe_labels(labels),
-            )
             try:
+                safe_name = name if type(name) is str and _SAFE_EVENT_NAME.fullmatch(name) else "telemetry.invalid_span_name"
+                span = SpanRecord(
+                    _now(), safe_name, max(0.0, time.monotonic() - started), status,
+                    _safe_correlation(correlation), safe_labels(labels),
+                )
                 self.sink.emit_span(span)
             except Exception:
                 self._failed()
