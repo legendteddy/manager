@@ -236,6 +236,29 @@ def run_bounded_agent_loop(
             batch_fingerprints.add(fingerprint)
             prepared.append((request, fingerprint))
 
+        if len(prepared) > 1:
+            for request, _ in prepared:
+                registered = registry.get(request["tool_name"])
+                if request["tool_name"] not in allowed or registered is None:
+                    return _set_stop(
+                        output,
+                        reason="tool_batch_preflight_blocked",
+                        status="blocked",
+                        model_steps=model_steps,
+                        tool_calls=tool_calls,
+                    )
+                if registered.definition["side_effect_class"] not in {
+                    "analysis",
+                    "read",
+                }:
+                    return _set_stop(
+                        output,
+                        reason="consequential_multi_tool_batch_requires_serialization",
+                        status="blocked",
+                        model_steps=model_steps,
+                        tool_calls=tool_calls,
+                    )
+
         continuation_results: list[dict[str, Any]] = []
         round_results: list[dict[str, Any]] = []
         for request, fingerprint in prepared:
