@@ -30,22 +30,24 @@ class MCPToolAdapter:
         expected_server_id: str,
         expected_schema_fingerprint: str,
         verifier: Verifier | None = None,
+        require_schema_bound_call: bool = False,
     ) -> None:
         self.client = client
         self.remote_tool_name = remote_tool_name
         self.expected_server_id = expected_server_id
         self.expected_schema_fingerprint = expected_schema_fingerprint
         self._verifier = verifier
+        self.require_schema_bound_call = require_schema_bound_call
 
     def _revalidate_remote_tool(self) -> None:
         if self.client.server_id != self.expected_server_id:
             raise MCPBoundaryError("MCP server identity changed before execution")
 
-        matches = [
-            normalize_mcp_tool(item)
-            for item in self.client.list_tools()
-            if normalize_mcp_tool(item)["name"] == self.remote_tool_name
-        ]
+        matches: list[dict[str, Any]] = []
+        for item in self.client.list_tools():
+            normalized = normalize_mcp_tool(item)
+            if normalized["name"] == self.remote_tool_name:
+                matches.append(normalized)
         if not matches:
             raise MCPBoundaryError(
                 f"MCP tool disappeared before execution: {self.remote_tool_name}"
@@ -60,6 +62,25 @@ class MCPToolAdapter:
             )
 
     def execute(self, arguments: dict[str, Any]) -> Any:
+        if self.client.server_id != self.expected_server_id:
+            raise MCPBoundaryError("MCP server identity changed before execution")
+
+        checked_call = getattr(self.client, "call_tool_checked", None)
+        if callable(checked_call):
+            return checked_call(
+                self.remote_tool_name,
+                dict(arguments),
+                expected_schema_fingerprint=self.expected_schema_fingerprint,
+            )
+
+        if self.require_schema_bound_call:
+            raise MCPBoundaryError(
+                "Consequential MCP execution requires a schema-bound client call"
+            )
+
+        # Read/analysis clients may retain the legacy interface. They still get
+        # immediate revalidation, but consequential actions are never allowed to
+        # cross this weaker check/use boundary.
         self._revalidate_remote_tool()
         return self.client.call_tool(self.remote_tool_name, dict(arguments))
 
@@ -126,6 +147,8 @@ def register_mcp_bindings(
 
     Remote descriptions, annotations, titles, hints, and output declarations
     are never promoted into trusted Manager policy fields automatically.
+    Consequential bindings additionally require a client that can bind schema
+    verification and invocation inside one underlying MCP client session.
     """
     verifiers = verifiers or {}
     if not isinstance(client.server_id, str) or not client.server_id:
@@ -169,9 +192,14 @@ def register_mcp_bindings(
 
         side_effect_class = local_definition["side_effect_class"]
         verifier = verifiers.get(local_name)
-        if side_effect_class in CONSEQUENTIAL_CLASSES and verifier is None:
+        consequential = side_effect_class in CONSEQUENTIAL_CLASSES
+        if consequential and verifier is None:
             raise MCPBoundaryError(
                 f"consequential MCP tool {local_name!r} requires an application-owned verifier"
+            )
+        if consequential and not callable(getattr(client, "call_tool_checked", None)):
+            raise MCPBoundaryError(
+                f"consequential MCP tool {local_name!r} requires schema-bound execution support"
             )
 
         definition = _configured_definition(binding, remote)
@@ -184,6 +212,7 @@ def register_mcp_bindings(
                     expected_server_id=binding["server_id"],
                     expected_schema_fingerprint=remote["schema_fingerprint"],
                     verifier=verifier,
+                    require_schema_bound_call=consequential,
                 ),
             )
         except (ToolRuntimeError, TypeError, ValueError) as exc:
