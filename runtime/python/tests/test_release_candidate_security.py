@@ -8,6 +8,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -252,6 +253,20 @@ class ReleaseCandidateSecurityTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertFalse(build_rc.compare_candidates(first, second))
+
+    def test_wheel_identity_ignores_nested_vendored_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            wheel = Path(tmp) / "setuptools-84.0.0-py3-none-any.whl"
+            with zipfile.ZipFile(wheel, "w") as archive:
+                archive.writestr(
+                    "setuptools-84.0.0.dist-info/METADATA",
+                    "Name: setuptools\nVersion: 84.0.0\n",
+                )
+                archive.writestr(
+                    "setuptools/_vendor/example-1.0.dist-info/METADATA",
+                    "Name: example\nVersion: 1.0\n",
+                )
+            self.assertEqual(build_rc.read_wheel_identity(wheel), ("setuptools", "84.0.0"))
 
     def test_sdist_normalization_removes_archive_metadata_variance(self):
         with tempfile.TemporaryDirectory() as tmp:
