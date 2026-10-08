@@ -1,0 +1,20 @@
+{
+  "environment": "production",
+  "bind_host": "0.0.0.0",
+  "bind_port": 8080,
+  "state_backend": "sqlite",
+  "sqlite_path": "/var/lib/manager/state/manager.sqlite3",
+  "instance_count": 1,
+  "max_concurrency": 8,
+  "queue_limit": 64,
+  "request_timeout_seconds": 60,
+  "provider_timeout_seconds": 45,
+  "mcp_timeout_seconds": 30,
+  "graceful_shutdown_seconds": 20,
+  "tls_mode": "external",
+  "telemetry_mode": "json_stdout",
+  "data_dir": "/var/lib/manager/state",
+  "tmp_dir": "/var/run/manager",
+  "secrets_dir": "/run/secrets",
+  "read_only_root": true
+}
