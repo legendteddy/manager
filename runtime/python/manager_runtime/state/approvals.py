@@ -13,13 +13,28 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _authorization_flag(source: dict[str, Any], key: str) -> bool:
+    if key not in source:
+        return False
+    value = source[key]
+    if not isinstance(value, bool):
+        raise RunStateError(f"current authorization field {key!r} must be boolean")
+    return value
+
+
 def _safe_authorization_context(value: dict[str, Any] | None) -> dict[str, Any]:
     source = value or {}
-    return {
-        key: bool(source.get(key))
-        for key in ("scope_authorized", "human_intent_confirmed", "target_verified")
-        if key in source
-    }
+    if not isinstance(source, dict):
+        raise RunStateError("authorization context must be an object")
+    result: dict[str, Any] = {}
+    for key in ("scope_authorized", "human_intent_confirmed", "target_verified"):
+        if key not in source:
+            continue
+        raw = source[key]
+        if not isinstance(raw, bool):
+            raise RunStateError(f"authorization field {key!r} must be boolean")
+        result[key] = raw
+    return result
 
 
 def checkpoint_pending_tool_approval(
@@ -108,6 +123,8 @@ def resume_tool_approval(
     """
     if success_status not in {"completed", "running"}:
         raise RunStateError("success_status must be completed or running")
+    if not isinstance(current_authorization, dict):
+        raise RunStateError("current authorization must be an object")
 
     state = store.load(run_id)
     if state is None:
@@ -182,14 +199,16 @@ def resume_tool_approval(
         return store.compare_and_swap(run_id, state["revision"], cancelled)
 
     side_effect_class = registered.definition["side_effect_class"]
-    if side_effect_class != "analysis" and not current_authorization.get(
-        "scope_authorized"
-    ):
+    scope_authorized = _authorization_flag(current_authorization, "scope_authorized")
+    target_verified = _authorization_flag(current_authorization, "target_verified")
+    _authorization_flag(current_authorization, "human_intent_confirmed")
+
+    if side_effect_class != "analysis" and not scope_authorized:
         raise RunStateError("current scope authorization is required before resume")
     if (
         side_effect_class in {"external_commitment", "sensitive_destructive"}
         and request.get("target")
-        and not current_authorization.get("target_verified")
+        and not target_verified
     ):
         raise RunStateError("current target verification is required before resume")
 
