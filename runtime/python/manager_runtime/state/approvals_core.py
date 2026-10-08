@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+from ..serialization import bounded_json_text
 from ..tools.base import ToolRegistry, tool_definition_fingerprint, tool_request_fingerprint
 from ..tools.runtime import execute_tool_request
 from .base import (
@@ -61,23 +61,7 @@ def _serialize_recorded_tool_output(
 ) -> tuple[str, bool]:
     if result.get("redacted"):
         return "Tool executed successfully; output withheld from the model by Manager policy.", True
-    try:
-        text = json.dumps(
-            result.get("output"),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            default=str,
-        )
-    except (TypeError, ValueError):
-        text = str(result.get("output"))
-    marker = "...[truncated by Manager]"
-    if len(text) > max_chars:
-        if max_chars <= len(marker):
-            text = marker[:max_chars]
-        else:
-            text = text[: max_chars - len(marker)] + marker
-    return text, False
+    return bounded_json_text(result.get("output"), max_chars), False
 
 
 def _recover_recorded_loop_execution(
