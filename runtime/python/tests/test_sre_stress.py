@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import threading
 import unittest
 
-from manager_runtime.capacity import CapacityLimits, OverloadedError
+from manager_runtime.capacity import CapacityLimits, CheckpointTooLarge, OverloadedError
 from manager_runtime.observability import InMemoryTelemetrySink
 from manager_runtime.operations import ObservedRunStore, OperationalRuntime
 from manager_runtime.tools import ToolRegistry, execute_tool_request
@@ -37,6 +38,18 @@ class BlockingStore:
 
     def compare_and_swap(self, run_id, expected_revision, state):
         return dict(state)
+
+
+class CountingList(list):
+    def __init__(self, size: int) -> None:
+        super().__init__()
+        self.size = size
+        self.visits = 0
+
+    def __iter__(self):
+        for _ in range(self.size):
+            self.visits += 1
+            yield "0123456789"
 
 
 def _tool_registry(adapter) -> ToolRegistry:
@@ -166,6 +179,25 @@ class SREStressTests(unittest.TestCase):
         self.assertEqual(operations.capacity.queue.depth, 8)
         self.assertEqual(operations.capacity.queue.rejected, 1000)
         self.assertEqual(len(sink.snapshot()["records"]), 128)
+
+    def test_checkpoint_accounting_matches_normal_json(self):
+        operations = OperationalRuntime(limits=CapacityLimits(checkpoint_max_bytes=4096))
+        state = {
+            "run_id": "run:test",
+            "text": "snowman ☃ and newline\n",
+            "values": [True, False, None, 42, 1.25],
+        }
+        expected = len(
+            json.dumps(state, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        )
+        self.assertEqual(operations.capacity.assert_checkpoint_size(state), expected)
+
+    def test_checkpoint_limit_stops_traversal_early(self):
+        operations = OperationalRuntime(limits=CapacityLimits(checkpoint_max_bytes=128))
+        flood = CountingList(1_000_000)
+        with self.assertRaises(CheckpointTooLarge):
+            operations.capacity.assert_checkpoint_size({"payload": flood})
+        self.assertLess(flood.visits, 20)
 
     def test_backlog_and_saturation_health_are_explicit(self):
         sink = InMemoryTelemetrySink(32)
