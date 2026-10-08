@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/recovery-resolution.schema.json",
+  "title": "Manager Recovery Resolution",
+  "type": "object",
+  "required": ["resolution_id", "run_id", "decision", "decided_by", "decided_at", "evidence"],
+  "properties": {
+    "resolution_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "decision": {
+      "enum": ["confirmed_succeeded", "confirmed_not_executed", "cancelled"]
+    },
+    "decided_by": {"type": "string", "minLength": 1},
+    "decided_at": {"type": "string", "format": "date-time"},
+    "evidence": {"type": "string", "minLength": 1},
+    "output": {},
+    "redacted": {"type": "boolean"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
