@@ -10,6 +10,21 @@
     "model": {"type": "string", "minLength": 1},
     "status": {"enum": ["completed", "incomplete", "failed"]},
     "output_text": {"type": "string"},
+    "tool_proposals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["proposal_id", "tool_name", "arguments"],
+        "properties": {
+          "proposal_id": {"type": "string", "minLength": 1},
+          "tool_name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+          "arguments": {"type": "object", "additionalProperties": true},
+          "target": {"type": ["string", "null"]},
+          "source_ref": {"type": ["string", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
     "usage": {
       "type": "object",
       "required": ["input_tokens", "output_tokens", "total_tokens"],
