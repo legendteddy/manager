@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 from copy import deepcopy
 from typing import Any
 
 from .orchestrator import MODEL_INSTRUCTIONS, run_with_model
 from .providers.base import ModelAdapter, ModelPayload, validate_model_response
+from .serialization import bounded_json_text
 from .tools.base import ToolRegistry, tool_request_fingerprint
 from .tools.runtime import execute_tool_request
 
@@ -51,23 +51,7 @@ def _set_stop(
 def _serialize_tool_output(result: dict[str, Any], max_chars: int) -> tuple[str, bool]:
     if result.get("redacted"):
         return "Tool executed successfully; output withheld from the model by Manager policy.", True
-    try:
-        text = json.dumps(
-            result.get("output"),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            default=str,
-        )
-    except (TypeError, ValueError):
-        text = str(result.get("output"))
-    if len(text) > max_chars:
-        marker = "...[truncated by Manager]"
-        if max_chars <= len(marker):
-            text = marker[:max_chars]
-        else:
-            text = text[: max_chars - len(marker)] + marker
-    return text, False
+    return bounded_json_text(result.get("output"), max_chars), False
 
 
 def _model_trace_event(response: dict[str, Any], step: int) -> dict[str, Any]:
