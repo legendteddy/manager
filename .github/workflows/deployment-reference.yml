@@ -10,7 +10,7 @@ permissions:
 jobs:
   container-smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 8
+    timeout-minutes: 10
     steps:
       - name: Check out event revision
         shell: bash
@@ -60,4 +60,109 @@ jobs:
             --env MANAGER_DEPLOY_TMP_DIR=/var/run/manager \
             --env MANAGER_DEPLOY_SECRETS_DIR=/run/secrets \
             --env MANAGER_DEPLOY_READ_ONLY_ROOT=true \
+            --entrypoint manager-deployment \
             manager-deployment:ci validate-config
+
+      - name: Start authenticated production service and exercise health/API/drain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci-secrets
+          printf '%s\n' 'synthetic-ci-service-token' > .ci-secrets/service-auth-token
+          chmod 0444 .ci-secrets/service-auth-token
+
+          container_id="$(docker run -d \
+            --read-only \
+            --tmpfs /var/lib/manager/state:uid=10001,gid=10001,mode=0750,size=64m \
+            --tmpfs /var/run/manager:uid=10001,gid=10001,mode=0750,size=64m \
+            --mount type=bind,src="$PWD/.ci-secrets",dst=/run/secrets,readonly \
+            --publish 127.0.0.1:18080:8080 \
+            --env MANAGER_DEPLOY_ENV=production \
+            --env MANAGER_DEPLOY_BIND_HOST=0.0.0.0 \
+            --env MANAGER_DEPLOY_BIND_PORT=8080 \
+            --env MANAGER_DEPLOY_STATE_BACKEND=sqlite \
+            --env MANAGER_DEPLOY_SQLITE_PATH=/var/lib/manager/state/manager.sqlite3 \
+            --env MANAGER_DEPLOY_INSTANCE_COUNT=1 \
+            --env MANAGER_DEPLOY_MAX_CONCURRENCY=4 \
+            --env MANAGER_DEPLOY_QUEUE_LIMIT=16 \
+            --env MANAGER_DEPLOY_REQUEST_TIMEOUT_SECONDS=10 \
+            --env MANAGER_DEPLOY_PROVIDER_TIMEOUT_SECONDS=8 \
+            --env MANAGER_DEPLOY_MCP_TIMEOUT_SECONDS=5 \
+            --env MANAGER_DEPLOY_GRACEFUL_SHUTDOWN_SECONDS=5 \
+            --env MANAGER_DEPLOY_TLS_MODE=external \
+            --env MANAGER_DEPLOY_TELEMETRY_MODE=json_stdout \
+            --env MANAGER_DEPLOY_DATA_DIR=/var/lib/manager/state \
+            --env MANAGER_DEPLOY_TMP_DIR=/var/run/manager \
+            --env MANAGER_DEPLOY_SECRETS_DIR=/run/secrets \
+            --env MANAGER_DEPLOY_READ_ONLY_ROOT=true \
+            --env MANAGER_SERVICE_AUTH_MODE=bearer \
+            --env MANAGER_SERVICE_AUTH_SECRET_NAME=service-auth-token \
+            manager-deployment:ci)"
+          trap 'docker logs "$container_id" || true; docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+
+          python - <<'PY'
+          import json
+          import time
+          import urllib.error
+          import urllib.request
+
+          base = "http://127.0.0.1:18080"
+          deadline = time.time() + 20
+          while True:
+              try:
+                  with urllib.request.urlopen(base + "/readyz", timeout=2) as response:
+                      payload = json.load(response)
+                      if response.status == 200 and payload.get("ok") is True:
+                          break
+              except Exception:
+                  pass
+              if time.time() >= deadline:
+                  raise SystemExit("service did not become ready")
+              time.sleep(0.25)
+
+          task = {
+              "task": {
+                  "task_id": "container-smoke",
+                  "objective": "Summarize the synthetic deployment smoke input.",
+                  "classification": {
+                      "materiality": "routine",
+                      "consequence": "low",
+                      "uncertainty": "low",
+                      "reversibility": "reversible",
+                      "sensitivity": "public",
+                  },
+              }
+          }
+          body = json.dumps(task).encode()
+          unauth = urllib.request.Request(
+              base + "/v1/run",
+              data=body,
+              method="POST",
+              headers={"Content-Type": "application/json"},
+          )
+          try:
+              urllib.request.urlopen(unauth, timeout=3)
+              raise SystemExit("unauthenticated request unexpectedly succeeded")
+          except urllib.error.HTTPError as exc:
+              assert exc.code == 401, exc.code
+
+          authenticated = urllib.request.Request(
+              base + "/v1/run",
+              data=body,
+              method="POST",
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer synthetic-ci-service-token",
+              },
+          )
+          with urllib.request.urlopen(authenticated, timeout=3) as response:
+              result = json.load(response)
+              assert response.status == 200
+              assert result["ok"] is True
+              assert result["output"]["trace"]["status"] == "completed"
+          PY
+
+          docker stop --time 10 "$container_id" >/dev/null
+          test "$(docker inspect --format='{{.State.ExitCode}}' "$container_id")" = "0"
+          trap - EXIT
+          docker rm "$container_id" >/dev/null
