@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from manager_runtime.orchestrator import run_with_model
 from manager_runtime.providers.base import validate_model_response
 from manager_runtime.providers.openai_adapter import OpenAIResponsesAdapter
+from manager_runtime.state.agent_loop import _safe_authorization_context
+from manager_runtime.state.base import RunStateError
 from manager_runtime.tools import ToolRegistry, execute_tool_request
 
 
@@ -201,6 +203,16 @@ class P1RuntimeHardeningTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"], "RuntimeError")
         self.assertNotIn("secret-tool-token", repr(result))
+
+    def test_durable_authorization_context_rejects_truthy_strings(self) -> None:
+        with self.assertRaisesRegex(RunStateError, "must be boolean"):
+            _safe_authorization_context({"scope_authorized": "false"})
+        self.assertEqual(
+            {"scope_authorized": False, "target_verified": True},
+            _safe_authorization_context(
+                {"scope_authorized": False, "target_verified": True}
+            ),
+        )
 
 
 if __name__ == "__main__":
