@@ -1,18 +1,26 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "manager-reference-runtime"
 version = "0.10.0"
 description = "Python reference control-plane, governed tool, durable approval, resumable bounded agent-loop, conformance, and governed MCP runtime for Manager"
+readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 
 [project.optional-dependencies]
 openai = ["openai>=3.20,<4"]
 mcp = ["mcp>=2.2,<3"]
 conformance = ["jsonschema>=4.23,<5"]
+
+[project.urls]
+Source = "https://github.com/legendteddy/manager"
+Issues = "https://github.com/legendteddy/manager/issues"
+Security = "https://github.com/legendteddy/manager/security/policy"
+Changelog = "https://github.com/legendteddy/manager/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["."]
