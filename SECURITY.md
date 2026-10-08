@@ -71,7 +71,7 @@ Provider-executed built-in tools or provider-managed MCP tools are not enabled i
 
 Multi-step execution is a fresh policy decision at every step, not a standing grant of autonomy.
 
-The Stage 7 reference loop requires finite model-step and tool-call budgets, blocks exact repeated tool actions before re-execution, and refuses to partially execute a provider batch that exceeds the remaining tool-call budget.
+The reference loop requires finite model-step and tool-call budgets, blocks exact repeated tool actions before re-execution, and refuses to partially execute a provider batch that exceeds the remaining tool-call budget.
 
 Approval is not reusable loop state. Any approval object supplied in reusable authorization context is discarded before a newly proposed action is evaluated. A new consequential action must satisfy its own current authorization and approval requirements.
 
@@ -79,17 +79,23 @@ Only executed tool results are eligible for continuation. Outputs marked sensiti
 
 Loop termination does not prove the external objective succeeded. Budget exhaustion, policy blocking, approval interruption, provider incompleteness, execution failure, and loop detection are explicit stop conditions.
 
-## Durable run state
+## Durable loop state
 
-Durability does not weaken approval freshness.
+Durability does not weaken approval freshness and does not create new authority.
 
-When a run resumes after interruption, Manager must revalidate the exact action, current tool definition, current scope authorization, and current target verification before execution.
+The Stage 8 durable loop persists consumed budgets, exact seen-action fingerprints, provider/model identity, allowed tool names, trusted tool-definition fingerprints, normalized model responses, and sanitized continuation results between durable phases.
+
+Restart does not reset budgets, clear loop-detection history, widen the allowed tool set, or carry an old approval into a new action.
+
+Durable mode is deliberately stricter than the non-durable loop: every `reversible_write`, `external_commitment`, and `sensitive_destructive` proposal must cross a durable approval checkpoint before execution. Current authorization, pending request identity, provider identity, and trusted tool definitions are revalidated on resume.
 
 The SQLite adapter persists execution state but is not an encryption boundary or a secret store. Embedding applications are responsible for appropriate filesystem/database access controls, encryption at rest, backup, retention, and regulatory requirements.
 
-Manager persists an `executing` checkpoint before a resumed consequential side effect. If a later process finds that state without a recorded terminal result, it must not automatically retry the external action. The reference runtime changes the state to `recovery_required` so the real external outcome can be reconciled first.
+Before a resumed consequential side effect executes, Manager persists `status = executing`. If a later process finds that state without a recorded outcome, it does not retry the external action automatically. The reference runtime changes the run to `recovery_required` so the real external outcome can be reconciled first.
 
-Stage 7 does not yet persist and resume an entire model/tool loop across an approval interruption.
+A durable checkpoint does not establish exactly-once provider calls or exactly-once external effects. A process failure between receiving a provider response and persisting the next local checkpoint may require the provider request to be issued again.
+
+See [`docs/durable-agent-loop.md`](docs/durable-agent-loop.md).
 
 ## Secrets
 
@@ -120,4 +126,4 @@ A dedicated private vulnerability-reporting channel has not yet been established
 
 ## Security maturity
 
-Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, recovery-required handling after interrupted execution intent, finite multi-step budgets, repeated-action loop detection, and sensitive-result withholding before continuation. These controls are tested in CI but have not been independently security-audited and do not establish production readiness, production sandboxing, credential safety, encrypted state handling, exactly-once side effects, durable whole-loop recovery, or safe autonomous production side effects.
+Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, recovery-required handling after interrupted execution intent, finite multi-step budgets, repeated-action loop detection, sensitive-result withholding, and durable bounded-loop resumption across approval interruption. These controls are tested in CI but have not been independently security-audited and do not establish production readiness, production sandboxing, credential safety, encrypted state handling, distributed coordination, exactly-once side effects, or safe autonomous production side effects.
