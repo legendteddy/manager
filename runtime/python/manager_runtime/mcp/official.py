@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
+from ..capacity import OverloadedError
+from ..operations import DEFAULT_OPERATIONS, OperationalRuntime
 from .base import MCPBoundaryError, normalize_mcp_tool
 
 T = TypeVar("T")
@@ -23,6 +25,7 @@ class OfficialMCPClient:
         target: Any,
         *,
         operation_timeout_seconds: float | None = None,
+        operations: OperationalRuntime | None = None,
     ) -> None:
         if not isinstance(server_id, str) or not server_id:
             raise ValueError("server_id must be non-empty text")
@@ -31,6 +34,7 @@ class OfficialMCPClient:
         self.server_id = server_id
         self.target = target
         self.operation_timeout_seconds = operation_timeout_seconds
+        self.operations = operations or DEFAULT_OPERATIONS
 
     @staticmethod
     def _imports():
@@ -70,6 +74,16 @@ class OfficialMCPClient:
             return None
         return OfficialMCPClient._find_nested_exception(error, MCPError)
 
+    @staticmethod
+    def _operation_label(operation: str) -> str:
+        if operation == "tool discovery":
+            return "tool_discovery"
+        if operation.startswith("schema-bound tool call"):
+            return "tool_call_checked"
+        if operation.startswith("tool call"):
+            return "tool_call"
+        return "operation"
+
     def _run_operation(
         self, operation: str, function: Callable[[], Awaitable[T]]
     ) -> T:
@@ -81,8 +95,16 @@ class OfficialMCPClient:
             with anyio.fail_after(self.operation_timeout_seconds):
                 return await function()
 
+        label = self._operation_label(operation)
         try:
-            return anyio.run(guarded)
+            with self.operations.operation(
+                "mcp",
+                labels={"operation": label},
+                attributes={"operation": label},
+            ):
+                return anyio.run(guarded)
+        except OverloadedError as exc:
+            raise MCPBoundaryError("MCP operation rejected because local capacity is exhausted") from exc
         except Exception as exc:
             timeout = self._find_nested_exception(exc, TimeoutError)
             if timeout is not None:
