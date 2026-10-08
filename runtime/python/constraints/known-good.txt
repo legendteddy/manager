@@ -1,0 +1,13 @@
+# Known-good direct dependency and build-tool baseline for Manager release-candidate verification.
+#
+# This is intentionally a direct-version baseline, not a complete transitive lock.
+# Compatibility CI continues to exercise the allowed ranges declared in pyproject.toml.
+# A future public release may add a fully hashed transitive lock if the release process
+# requires stronger offline/reproducible dependency reconstruction.
+
+pip==26.2.1
+setuptools==84.0.0
+build==1.6.1
+jsonschema==4.26.0
+openai==3.26.0
+mcp==2.3.0
