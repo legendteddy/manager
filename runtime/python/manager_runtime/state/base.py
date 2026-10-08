@@ -41,6 +41,7 @@ class RunStoreCapabilities:
     fencing: bool
     durable_idempotency: bool
     execution_guard: bool
+    atomic_recovery_resolution: bool
     coordination_scope: str
 
 
@@ -151,6 +152,26 @@ class CoordinatedRunStore(RunStore, Protocol):
     ) -> DurableOperation:
         """Persist a terminal/uncertain operation outcome under the same fence."""
 
+    def resolve_operation_and_compare_and_swap(
+        self,
+        run_id: str,
+        expected_revision: int,
+        state: RunState,
+        *,
+        lease: RunLease,
+        operation_id: str,
+        request_fingerprint: str,
+        operation_status: str,
+        operation_result: RunState | None,
+    ) -> RunState:
+        """Atomically reconcile an uncertain operation and its run state.
+
+        Recovery evidence must not leave the operation ledger and authoritative
+        run row disagreeing because the process crashed between two commits.
+        Implementations may accept only reviewed recovery transitions, such as
+        ``started``/``outcome_unknown`` to ``confirmed``/``not_executed``.
+        """
+
     def load_operation(self, operation_id: str) -> DurableOperation | None:
         """Load durable evidence for an operation identity."""
 
@@ -161,7 +182,7 @@ def require_coordinated_store(store: RunStore) -> CoordinatedRunStore:
     if not isinstance(store, CoordinatedRunStore):
         raise RunStateError(
             "consequential durable execution requires a coordinated run store "
-            "with leases, fencing, durable idempotency, and an execution guard"
+            "with leases, fencing, durable idempotency, and atomic recovery"
         )
     capabilities = store.capabilities
     if not (
@@ -171,6 +192,7 @@ def require_coordinated_store(store: RunStore) -> CoordinatedRunStore:
         and capabilities.fencing
         and capabilities.durable_idempotency
         and capabilities.execution_guard
+        and capabilities.atomic_recovery_resolution
     ):
         raise RunStateError(
             "state backend does not advertise all guarantees required for "
