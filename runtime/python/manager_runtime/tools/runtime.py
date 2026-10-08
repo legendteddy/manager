@@ -27,12 +27,13 @@ def _fingerprint(request: ToolPayload) -> str:
 
 def _approval_packet(
     request: ToolPayload,
-    task: dict[str, Any],
     *,
+    side_effect_class: str,
     status: str = "pending",
     reason: str,
 ) -> ToolPayload:
     target = request.get("target") or f"tool:{request['tool_name']}"
+    risk_class = "critical" if side_effect_class == "sensitive_destructive" else "high"
     return {
         "approval_id": f"approval:{request['request_id']}",
         "run_id": request["run_id"],
@@ -40,8 +41,8 @@ def _approval_packet(
         "action": f"tool:{request['tool_name']}",
         "target": target,
         "material_parameters": request["arguments"],
-        "materiality": task.get("classification", {}).get("materiality", "material"),
-        "risk_class": task.get("classification", {}).get("consequence", "high"),
+        "materiality": "material",
+        "risk_class": risk_class,
         "reason": reason,
         "recommendation": "Review the exact tool, target, and arguments before execution.",
         "recovery": "No additional side effect is performed until authorization is current.",
@@ -88,23 +89,33 @@ def _result(
 
 def _approval_state(
     request: ToolPayload,
-    task: dict[str, Any],
     authorization: ToolPayload,
     *,
+    side_effect_class: str,
     reason: str,
 ) -> tuple[bool, ToolPayload]:
     supplied = authorization.get("approval")
     expected = _fingerprint(request)
     if not isinstance(supplied, dict):
-        return False, _approval_packet(request, task, status="pending", reason=reason)
+        return False, _approval_packet(
+            request,
+            side_effect_class=side_effect_class,
+            status="pending",
+            reason=reason,
+        )
 
     if supplied.get("status") != "approved":
-        return False, _approval_packet(request, task, status="pending", reason=reason)
+        return False, _approval_packet(
+            request,
+            side_effect_class=side_effect_class,
+            status="pending",
+            reason=reason,
+        )
 
     if supplied.get("action_fingerprint") != expected:
         stale = _approval_packet(
             request,
-            task,
+            side_effect_class=side_effect_class,
             status="stale",
             reason="The approved tool action no longer matches the current target or arguments.",
         )
@@ -170,8 +181,8 @@ def execute_tool_request(
     if side_effect_class == "reversible_write" and task_materiality == "material":
         approved, approval = _approval_state(
             request,
-            task,
             authorization,
+            side_effect_class=side_effect_class,
             reason="Material reversible writes require exact human approval.",
         )
         if not approved:
@@ -196,8 +207,8 @@ def execute_tool_request(
         if not human_intent_confirmed:
             approved, approval = _approval_state(
                 request,
-                task,
                 authorization,
+                side_effect_class=side_effect_class,
                 reason="External commitments require explicit human intent.",
             )
             if not approved:
@@ -221,8 +232,8 @@ def execute_tool_request(
             )
         approved, approval = _approval_state(
             request,
-            task,
             authorization,
+            side_effect_class=side_effect_class,
             reason="Sensitive or destructive tool actions require exact human approval.",
         )
         if not approved:
