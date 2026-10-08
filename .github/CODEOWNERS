@@ -1,0 +1,11 @@
+# Default ownership
+* @legendteddy
+
+# Protected governance and security surfaces
+/GOVERNANCE.md @legendteddy
+/SECURITY.md @legendteddy
+/docs/protected-surfaces.md @legendteddy
+/docs/public-private-boundary.md @legendteddy
+/evals/ @legendteddy
+/.github/workflows/ @legendteddy
+/scripts/ @legendteddy
