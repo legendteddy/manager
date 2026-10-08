@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from typing import Any, Protocol, runtime_checkable
 
@@ -39,6 +40,8 @@ _TOOL_PROPOSAL_KEYS = {
     "source_ref",
 }
 _USAGE_KEYS = {"input_tokens", "output_tokens", "total_tokens"}
+_MAX_MODEL_JSON_DEPTH = 64
+_MAX_MODEL_JSON_NODES = 100_000
 
 
 class ProviderAdapterError(RuntimeError):
@@ -53,6 +56,53 @@ class ModelAdapter(Protocol):
 
     def generate(self, request: ModelPayload) -> ModelPayload:
         """Generate a normalized model response for a normalized request."""
+
+
+def _validate_json_value(
+    value: Any,
+    *,
+    path: str,
+    depth: int = 0,
+    nodes: list[int] | None = None,
+) -> None:
+    if depth > _MAX_MODEL_JSON_DEPTH:
+        raise ValueError(
+            f"{path} exceeds maximum JSON nesting depth of {_MAX_MODEL_JSON_DEPTH}"
+        )
+    budget = nodes if nodes is not None else [0]
+    budget[0] += 1
+    if budget[0] > _MAX_MODEL_JSON_NODES:
+        raise ValueError(
+            f"{path} exceeds maximum JSON node count of {_MAX_MODEL_JSON_NODES}"
+        )
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} contains a non-finite number")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value(
+                item,
+                path=f"{path}[{index}]",
+                depth=depth + 1,
+                nodes=budget,
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path} object keys must be strings")
+            _validate_json_value(
+                item,
+                path=f"{path}.{key}",
+                depth=depth + 1,
+                nodes=budget,
+            )
+        return
+    raise TypeError(f"{path} must contain only JSON-compatible values")
 
 
 def _validate_tool_definitions(tools: Any) -> None:
@@ -93,7 +143,7 @@ def _validate_tool_definitions(tools: Any) -> None:
                 ensure_ascii=True,
                 allow_nan=False,
             )
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, RecursionError) as exc:
             raise TypeError("model request tool definitions must be JSON-compatible") from exc
         if encoded in seen_payloads:
             raise ValueError("model request tool definitions must be unique")
@@ -140,6 +190,7 @@ def _validate_continuation(continuation: Any) -> None:
 def validate_model_request(request: ModelPayload) -> None:
     if not isinstance(request, dict):
         raise TypeError("model request must be an object")
+    _validate_json_value(request, path="model request")
     required = ("request_id", "model", "input")
     missing = [key for key in required if key not in request]
     if missing:
@@ -226,10 +277,13 @@ def validate_model_response(
     """Validate the normalized model-response contract and runtime invariants.
 
     The checks intentionally mirror contracts/model-response.schema.json rather
-    than trusting adapters to have normalized provider output correctly.
+    than trusting adapters to have normalized provider output correctly. The
+    full payload is also bounded to canonical JSON-compatible values before any
+    tool proposal can be fingerprinted or persisted.
     """
     if not isinstance(response, dict):
         raise TypeError("model response must be an object")
+    _validate_json_value(response, path="model response")
 
     required = ("response_id", "provider", "model", "status", "output_text", "usage")
     missing = [key for key in required if key not in response]
