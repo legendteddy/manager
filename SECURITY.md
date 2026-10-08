@@ -55,16 +55,27 @@ Trusted tool metadata must come from the application-owned registry. In particul
 
 - side-effect class;
 - verification requirement;
+- tool version;
 - authorization scope;
 - human-intent confirmation;
 - target verification;
 - approval status.
 
-The Stage 5 reference runtime binds sensitive/destructive approval to the exact tool name, target, and arguments. If those change, the approval is stale.
+The reference runtime binds sensitive/destructive approval to the exact tool name, target, and arguments. If those change, the approval is stale.
 
-Consequential tools must require post-execution verification in the reference runtime. A returned value is not sufficient evidence that the intended external effect occurred.
+Consequential tools must declare an application-owned version and require post-execution verification in the reference runtime. Changing policy-relevant tool metadata invalidates a durable approval checkpoint before resumption.
 
-Provider-executed built-in tools or provider-managed MCP tools are not enabled in the Stage 5 reference path. Custom function calls are normalized into proposals so Manager can evaluate them before application-owned execution. Future provider-managed tool support must preserve an equivalent policy and approval boundary.
+Provider-executed built-in tools or provider-managed MCP tools are not enabled in the reference path. Custom function calls are normalized into proposals so Manager can evaluate them before application-owned execution. Future provider-managed tool support must preserve an equivalent policy and approval boundary.
+
+## Durable run state
+
+Durability does not weaken approval freshness.
+
+When a run resumes after interruption, Manager must revalidate the exact action, current tool definition, current scope authorization, and current target verification before execution.
+
+The Stage 6 SQLite adapter persists execution state but is not an encryption boundary or a secret store. Embedding applications are responsible for appropriate filesystem/database access controls, encryption at rest, backup, retention, and regulatory requirements.
+
+Manager persists an `executing` checkpoint before a resumed consequential side effect. If a later process finds that state without a recorded terminal result, it must not automatically retry the external action. The reference runtime changes the state to `recovery_required` so the real external outcome can be reconciled first.
 
 ## Secrets
 
@@ -87,7 +98,7 @@ Repository integrity checks may detect some high-confidence leakage patterns, bu
 
 Record enough to reconstruct what happened without recording hidden chain-of-thought or unnecessary sensitive content. Useful traces may include run/correlation ID, selected workflow, activated capabilities and purpose, tool actions and outcomes at a non-sensitive level, approvals, reconciliation classification, verification result, final status, and material uncertainty.
 
-Do not place raw sensitive tool arguments or outputs into public traces merely for debugging convenience.
+Do not place raw sensitive tool arguments, outputs, or durable state snapshots into public traces merely for debugging convenience.
 
 ## Vulnerability reporting
 
@@ -95,4 +106,4 @@ A dedicated private vulnerability-reporting channel has not yet been established
 
 ## Security maturity
 
-Manager now has executable reference controls for model gating and governed synthetic custom-tool execution, including approval fingerprinting and verification gates. These controls are tested in CI but have not been independently security-audited and do not establish production readiness, production sandboxing, credential safety, or safe autonomous production side effects.
+Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, and recovery-required handling after interrupted execution intent. These controls are tested in CI but have not been independently security-audited and do not establish production readiness, production sandboxing, credential safety, encrypted state handling, exactly-once side effects, or safe autonomous production side effects.
