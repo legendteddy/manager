@@ -51,6 +51,8 @@ Trusted authorization is supplied to the runtime separately from the proposal. T
 
 Model output is never trusted as authorization context.
 
+In the Stage 7 bounded loop, reusable authorization context may carry scope, intent, and target-verification facts, but any supplied `approval` object is deliberately discarded before a newly proposed action is evaluated. Approval remains action-specific.
+
 ## Sensitive/destructive approval
 
 For `sensitive_destructive` tools, the runtime binds approval to a stable fingerprint of:
@@ -75,11 +77,25 @@ See [`run-state.md`](run-state.md).
 
 Tools marked `requires_verification` do not receive a successful verified result merely because execution returned. The adapter must provide a verification method and that verification must pass. A failed or missing verification produces a failed/unverified outcome rather than an invented success claim.
 
-## Model-provider integration
+Only `executed` tool results are eligible for Stage 7 model continuation. A consequential tool therefore cannot feed a success result back to the model until its required verification has passed.
+
+## Model-provider continuation
 
 The reference path exposes only **custom function proposals** to model providers. The model may request a function call; Manager's application layer owns whether that request executes.
 
+Stage 7 can return verified tool results to a model for another bounded turn. Before transfer, Manager:
+
+1. withholds outputs marked sensitive by trusted tool metadata;
+2. serializes non-sensitive outputs;
+3. truncates each serialized result to the configured maximum size;
+4. associates the result with the original proposal ID;
+5. applies finite model-step and tool-call budgets before any further execution.
+
+Exact repeated tool name + target + arguments are treated as a loop and blocked before a second execution.
+
 Provider-executed built-in tools and provider-managed MCP tools remain outside the reference path because they can execute inside the provider before Manager's local tool policy evaluates the request. Future support must preserve the same policy and approval boundary.
+
+See [`agent-loop.md`](agent-loop.md).
 
 ## Current limits
 
@@ -92,8 +108,8 @@ The reference runtime does not yet provide:
 - provider failover;
 - parallel tool execution;
 - automatic retry of side effects;
-- a model continuation loop after tool results;
-- durable provider conversation state;
+- durable resumption of the entire model/tool loop across an approval interruption;
+- durable provider conversation state independent of provider response references;
 - production credentials or production tools.
 
 All examples and tests use synthetic adapters.
