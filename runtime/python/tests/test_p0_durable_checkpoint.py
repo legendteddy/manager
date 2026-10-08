@@ -81,7 +81,7 @@ class DurablePostEffectCheckpointTests(unittest.TestCase):
             "run_id": req["run_id"],
             "task_id": "post-effect",
             "status": "executing",
-            "revision": 3,
+            "revision": 1,
             "created_at": "2026-10-08T00:00:00Z",
             "updated_at": "2026-10-08T00:02:00Z",
             "task": {
@@ -173,21 +173,7 @@ class DurablePostEffectCheckpointTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             store = SQLiteRunStore(Path(directory) / "state.sqlite3")
-            # create() requires revision 1; seed through direct SQL-like normal
-            # transitions so the stored revision remains contract-valid.
-            seeded = deepcopy(state)
-            seeded["revision"] = 1
-            created = store.create(seeded)
-            if state["revision"] != created["revision"]:
-                current = created
-                while current["revision"] < state["revision"]:
-                    replacement = deepcopy(current)
-                    replacement["revision"] = current["revision"] + 1
-                    replacement["updated_at"] = "2026-10-08T00:02:00Z"
-                    current = store.compare_and_swap(
-                        current["run_id"], current["revision"], replacement
-                    )
-
+            store.create(state)
             recovered = resume_tool_approval(
                 store,
                 req["run_id"],
