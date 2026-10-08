@@ -18,6 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
 CONTRACTS_DIR = ROOT / "contracts"
 EVAL_CASES_DIR = ROOT / "evals" / "cases"
+SUPPLY_CHAIN_WORKFLOWS = (
+    ROOT / ".github" / "workflows" / "repository-integrity.yml",
+    ROOT / ".github" / "workflows" / "release-candidate.yml",
+    ROOT / ".github" / "workflows" / "release-publish.yml",
+    ROOT / ".github" / "workflows" / "dependency-vulnerability.yml",
+)
 
 RISKY_FILENAMES = {
     ".env",
@@ -45,6 +51,7 @@ SAFE_EMAIL_SUFFIXES = (
     "@example.net",
 )
 SAFE_EMAIL_EXACT = {"noreply@github.com"}
+ACTION_SHA_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 
 EVAL_CATEGORIES = {
     "routing",
@@ -161,6 +168,48 @@ def validate_eval_cases(failures: list[str]) -> None:
                 failures.append(f"eval assertion {index} requires value for its operator: {relative}")
 
 
+def validate_supply_chain_workflow(path: Path, failures: list[str]) -> None:
+    """Enforce high-confidence workflow invariants without needing a YAML dependency."""
+
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except UnicodeDecodeError as exc:
+        failures.append(f"supply-chain workflow is not UTF-8 {path}: {exc}")
+        return
+
+    label = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.name
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("uses: "):
+            action = stripped.removeprefix("uses: ").split(" #", 1)[0].strip()
+            if not ACTION_SHA_RE.fullmatch(action):
+                failures.append(
+                    f"supply-chain workflow action must be pinned to a 40-hex commit: {label}:{index + 1}"
+                )
+
+        if stripped not in {"run: |", "run: >", "run: |-", "run: >-"}:
+            continue
+        base_indent = len(line) - len(line.lstrip())
+        block_lines: list[str] = []
+        for candidate in lines[index + 1 :]:
+            if candidate.strip():
+                indent = len(candidate) - len(candidate.lstrip())
+                if indent <= base_indent:
+                    break
+            block_lines.append(candidate)
+        if "${{ inputs." in "\n".join(block_lines):
+            failures.append(
+                f"workflow_dispatch inputs must enter shell through env, not expression interpolation: {label}:{index + 1}"
+            )
+
+
+def validate_supply_chain_workflows(failures: list[str]) -> None:
+    for path in SUPPLY_CHAIN_WORKFLOWS:
+        validate_supply_chain_workflow(path, failures)
+
+
 def main() -> int:
     failures: list[str] = []
     warnings: list[str] = []
@@ -191,6 +240,7 @@ def main() -> int:
 
     validate_contracts(failures)
     validate_eval_cases(failures)
+    validate_supply_chain_workflows(failures)
 
     try:
         log_emails = subprocess.check_output(

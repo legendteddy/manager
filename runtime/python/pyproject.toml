@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -22,6 +22,9 @@ classifiers = [
 openai = ["openai>=3.20,<4"]
 mcp = ["mcp>=2.2,<3"]
 conformance = ["jsonschema>=4.23,<5"]
+
+[project.scripts]
+manager-deployment = "manager_runtime.deployment.cli:main"
 
 [project.urls]
 Source = "https://github.com/legendteddy/manager"
