@@ -27,12 +27,29 @@ services:
       MANAGER_DEPLOY_TMP_DIR: /var/run/manager
       MANAGER_DEPLOY_SECRETS_DIR: /run/secrets
       MANAGER_DEPLOY_READ_ONLY_ROOT: "true"
+      MANAGER_SERVICE_AUTH_MODE: bearer
+      MANAGER_SERVICE_AUTH_SECRET_NAME: service-auth-token
+      MANAGER_SERVICE_MAX_REQUEST_BYTES: "1048576"
     volumes:
       - manager-state:/var/lib/manager/state
     tmpfs:
       - /var/run/manager:uid=10001,gid=10001,mode=0750,size=64m
-    # Mount provider/MCP/TLS secret material from an external secret mechanism.
-    # Never bake it into this image or compose file.
+    secrets:
+      - service-auth-token
+    # Loopback-only publication is intentional for the external-TLS reference.
+    # Put an authenticated/TLS reverse proxy or ingress in front of this socket.
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2); assert r.status == 200 and json.load(r)['ok'] is True"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     stop_grace_period: 25s
     pids_limit: 256
     mem_limit: 1g
@@ -41,9 +58,10 @@ services:
       nofile:
         soft: 4096
         hard: 4096
-    # The image defaults to config validation. After the service-runtime branch is
-    # integrated, replace this with the canonical Manager service command and add
-    # a readiness/liveness healthcheck against its documented endpoints.
 
 volumes:
   manager-state: {}
+
+secrets:
+  service-auth-token:
+    external: true
