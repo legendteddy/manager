@@ -8,7 +8,7 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Durable bounded agent-loop stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, and resumable loop checkpoints that preserve budgets and seen-action history across approval interruptions.
+**Conformance-hardened durable agent-loop stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, resumable loop checkpoints, full contract-conformance testing, legal durable-state transition validation, and explicit evidence-based recovery resolution.
 
 The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
 
@@ -22,6 +22,8 @@ The implemented runtime is intentionally narrow. It does not claim production re
 - **Resumable approval.** Approval survives interruption only as a durable, exact checkpoint that must be revalidated before execution.
 - **Bounded iteration.** Multi-step model/tool execution uses finite budgets, loop detection, and fresh policy checks at every step.
 - **Durable loop identity.** Restart preserves consumed budgets, seen-action fingerprints, provider/model identity, and trusted tool-definition fingerprints instead of granting a fresh execution context.
+- **Fail-closed persistence.** Corrupted state, impossible transitions, unsupported checkpoint versions, and uncertain external outcomes stop execution rather than being guessed through.
+- **Contract conformance.** Representative emitted runtime artifacts must validate against the public machine-readable contracts in CI.
 - **Authoritative reconciliation.** Update the source that owns the truth first, then propagate dependent effects and verify consistency.
 - **Evidence over ceremony.** Evals and observable outcomes matter more than agent count, role-play, or verbose traces.
 - **Provider neutrality.** Canonical contracts do not depend on one model vendor, tool protocol, state store, or product surface.
@@ -49,6 +51,10 @@ checkpoint exact approval before consequential side effects
 revalidate before resumed execution
   ↓
 continue from preserved loop budgets + seen actions
+  ↓
+if outcome is uncertain: recovery_required
+  ↓
+resolve only from explicit external evidence
   ↓
 reconcile authoritative state
   ↓
@@ -78,9 +84,9 @@ durable loop/run state for interrupted work
       ↓
 execution
       ↓
-reconciliation + verification
+recovery + reconciliation + verification
       ↓
-tracing + evals
+tracing + evals + schema conformance
 ```
 
 Internal components use conventional technical terms such as `orchestrator`, `router`, `capability`, `specialist agent`, `policy`, `approval`, `state`, `evaluator`, `reconciliation`, `tracing`, `eval`, and `adapter`.
@@ -112,7 +118,7 @@ bounded model continuation when budget remains
 persisted loop checkpoint for restart/resume
 ```
 
-A model response supplies content or proposes a tool inside an already-bounded workflow. It cannot approve a material action, lower a tool's side-effect class, grant itself authorization, redefine state ownership, or bypass reconciliation.
+A model response supplies content or proposes a tool inside an already-bounded workflow. It cannot approve a material action, lower a tool's side-effect class, grant itself authorization, redefine state ownership, resolve an uncertain external side effect, or bypass reconciliation.
 
 The first reference provider adapter targets OpenAI's Responses API. The adapter normalizes custom function calls into proposals and maps verified continuation results through `previous_response_id` plus `function_call_output`; execution remains application-owned.
 
@@ -127,9 +133,11 @@ From the repository root:
 ```bash
 PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
 PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -v
+python3 -m pip install 'jsonschema>=4.23,<5'
+PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
 ```
 
-The deterministic eval and unit-test suite does not require provider credentials, live tools, network access, or production state stores.
+The deterministic eval and unit-test suite does not require provider credentials, live tools, network model calls, or production state stores. Schema conformance uses `jsonschema` as a test-only dependency.
 
 ## Manager, MCP, and product integrations
 
@@ -145,15 +153,16 @@ Provider- or product-specific behavior belongs behind adapters rather than insid
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): logical architecture and invariants
 - [`GOVERNANCE.md`](GOVERNANCE.md): authority, accountability, materiality, approvals, and bounded evolution
-- [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, and public safety
+- [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, persistence, recovery, and public safety
 - [`AGENTS.md`](AGENTS.md): instructions for AI systems working in this repository
 - [`contracts/`](contracts/): provider-neutral machine-readable contracts
-- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, durable run store, bounded agent loop, and durable loop-resume state machine
+- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, durable run store, bounded agent loop, durable loop-resume state machine, and recovery controls
 - [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
 - [`docs/tool-runtime.md`](docs/tool-runtime.md): tool proposal, policy, approval, execution, and verification boundary
 - [`docs/agent-loop.md`](docs/agent-loop.md): finite multi-step model/tool continuation and stop conditions
 - [`docs/durable-agent-loop.md`](docs/durable-agent-loop.md): persisted loop phases, restart invariants, and durable continuation behavior
 - [`docs/run-state.md`](docs/run-state.md): durable checkpoints, resumable approvals, and recovery-required behavior
+- [`docs/conformance-recovery.md`](docs/conformance-recovery.md): schema conformance, state transitions, checkpoint versions, and recovery resolution
 - [`docs/handoffs.md`](docs/handoffs.md): bounded delegation contract
 - [`docs/reconciliation.md`](docs/reconciliation.md): authoritative-state reconciliation
 - [`docs/evidence.md`](docs/evidence.md): evidence and claim discipline
@@ -169,6 +178,6 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, and a tested durable loop-resume path that preserves budgets, seen actions, tool definitions, and provider identity across an approval interruption. Current CI verifies public-repository integrity, Python compilation, unit tests, and deterministic behavioral evals without requiring provider credentials or live external side effects.
+Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, a tested durable loop-resume path, full Draft 2020-12 conformance checks for representative emitted artifacts, legal state-transition enforcement, corrupted-state rejection, and an explicit recovery protocol for uncertain external outcomes. Current CI verifies public-repository integrity, Python compilation, unit tests, deterministic behavioral evals, and schema conformance without requiring provider credentials or live external side effects.
 
 Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", "distributed", or "safe for autonomous production side effects" require additional evidence for that exact claim.
