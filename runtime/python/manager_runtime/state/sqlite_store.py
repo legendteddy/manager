@@ -9,6 +9,10 @@ from .base import RunState, RunStateConflict, RunStateError
 from .transitions import validate_run_state_shape, validate_run_state_transition
 
 
+def _reject_nonfinite_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is not allowed: {value}")
+
+
 class SQLiteRunStore:
     """Zero-dependency durable run store using Python's sqlite3 module.
 
@@ -41,13 +45,23 @@ class SQLiteRunStore:
     @staticmethod
     def _encoded(state: RunState) -> str:
         validate_run_state_shape(state)
-        return json.dumps(state, sort_keys=True, separators=(",", ":"))
+        try:
+            return json.dumps(
+                state,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise RunStateError(
+                "run state is not safely serializable as canonical JSON"
+            ) from exc
 
     @staticmethod
     def _decoded(payload: str) -> RunState:
         try:
-            value = json.loads(payload)
-        except json.JSONDecodeError as exc:
+            value = json.loads(payload, parse_constant=_reject_nonfinite_constant)
+        except (json.JSONDecodeError, ValueError, RecursionError) as exc:
             raise RunStateError("persisted run state is corrupted JSON") from exc
         if not isinstance(value, dict):
             raise RunStateError("persisted run state must decode to an object")
@@ -61,17 +75,27 @@ class SQLiteRunStore:
                 "persisted run revision metadata does not match serialized state"
             )
 
+    @staticmethod
+    def _copy_candidate(state: RunState) -> RunState:
+        try:
+            return deepcopy(state)
+        except RecursionError as exc:
+            raise RunStateError(
+                "run state is not safely serializable as canonical JSON"
+            ) from exc
+
     def create(self, state: RunState) -> RunState:
-        candidate = deepcopy(state)
+        candidate = self._copy_candidate(state)
         if candidate.get("revision") != 1:
             raise RunStateError("new run state must start at revision 1")
         validate_run_state_shape(candidate)
         run_id = candidate["run_id"]
+        encoded = self._encoded(candidate)
         try:
             with self._connect() as connection:
                 connection.execute(
                     "INSERT INTO manager_runs(run_id, revision, state_json) VALUES (?, ?, ?)",
-                    (run_id, 1, self._encoded(candidate)),
+                    (run_id, 1, encoded),
                 )
         except sqlite3.IntegrityError as exc:
             raise RunStateConflict(f"run already exists: {run_id}") from exc
@@ -91,9 +115,10 @@ class SQLiteRunStore:
     def compare_and_swap(
         self, run_id: str, expected_revision: int, state: RunState
     ) -> RunState:
-        candidate = deepcopy(state)
+        candidate = self._copy_candidate(state)
         if candidate.get("run_id") != run_id:
             raise RunStateError("replacement run_id must match the stored run")
+        encoded_candidate = self._encoded(candidate)
 
         connection = self._connect()
         try:
@@ -124,7 +149,7 @@ class SQLiteRunStore:
                 """,
                 (
                     candidate["revision"],
-                    self._encoded(candidate),
+                    encoded_candidate,
                     run_id,
                     expected_revision,
                 ),
