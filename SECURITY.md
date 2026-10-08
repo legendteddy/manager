@@ -83,11 +83,24 @@ MCP provenance is included in the effective registered tool version. Durable che
 
 Consequential MCP tools require an application-owned verifier before registration. A successful MCP response is not, by itself, independent verification that the intended external effect occurred.
 
-The optional official SDK bridge may be configured with a positive operation timeout. Timeouts, nested SDK task-group failures, transport failures, and MCP error results are normalized at Manager's adapter boundary. Each reference operation owns a fresh SDK client context so a later operation reconnects rather than reusing an uncertain cancelled session.
+The optional official SDK bridge may be configured with a positive operation timeout. Timeouts, nested SDK task-group failures, transport failures, MCP protocol errors, and MCP error results are normalized at Manager's adapter boundary. Each reference operation owns a fresh SDK client context so a later operation reconnects rather than reusing an uncertain cancelled session.
 
-CI exercises this behavior against a synthetic local stdio MCP subprocess. The suite verifies discovery, governed execution, result normalization, execution-time schema drift blocking, disappearance/reconnect behavior, error-result normalization, slow-call cancellation, subprocess cleanup, and post-timeout reconnection. It uses no external MCP service, credential, or real side effect.
+CI exercises the bridge against two synthetic local paths:
 
-This evidence does **not** establish Streamable HTTP conformance, production OAuth or credential handling, connection pooling safety, arbitrary-server trustworthiness, hostile-wire robustness, process sandboxing, or production readiness.
+- a real stdio MCP subprocess;
+- a real loopback Streamable HTTP MCP server.
+
+The stdio suite covers discovery, governed execution, result normalization, execution-time schema drift blocking, disappearance/reconnect behavior, error-result normalization, slow-call cancellation, subprocess cleanup, and post-timeout reconnection.
+
+The Streamable HTTP suite covers URL-target discovery, governed execution, schema drift blocking before `tools/call`, local server restart/reconnect, error-result normalization, slow-call cancellation, same-origin redirect following, cross-origin redirect rejection, externally supplied synthetic headers, and malformed JSON response rejection.
+
+For HTTP, redirect handling is an egress boundary. The tested SDK path follows a method-preserving redirect that stays on the configured origin and rejects a redirect to a different origin. Manager preserves the SDK's transport-policy error through `MCPBoundaryError` so a deliberate redirect refusal is not collapsed into an opaque task-group failure.
+
+HTTP headers, credentials, OAuth configuration, proxy settings, certificates, and other connection-specific settings remain application-owned configuration outside canonical public bindings. A synthetic header propagation test proves the integration point only; it is not a production authentication policy.
+
+Malformed HTTP or MCP content is untrusted transport input. A successful socket or HTTP exchange is not evidence of a valid MCP response.
+
+This transport evidence does **not** establish production OAuth or credential handling, TLS/mTLS policy, enterprise proxy/egress policy, request-scoped SSE response-stream safety, connection-pooling safety, arbitrary-server trustworthiness, hostile-wire robustness beyond tested malformed input, process sandboxing, or production readiness.
 
 Connection targets, process commands, URLs, credentials, OAuth configuration, and other environment-specific MCP settings remain outside canonical public contracts. Tool output returned by MCP is untrusted data and follows the same redaction, continuation, and trace-minimization rules as native tool output.
 
@@ -180,4 +193,4 @@ A dedicated private vulnerability-reporting channel has not yet been established
 
 ## Security maturity
 
-Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, Manager-owned MCP tool binding, execution-time MCP schema/identity revalidation, synthetic stdio MCP transport conformance, bounded MCP operation timeouts and cancellation cleanup, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, legal state-transition validation, corrupted-state fail-closed handling, recovery-required resolution from explicit evidence, checkpoint-version rejection/migration boundaries, finite multi-step budgets, repeated-action loop detection, sensitive-result withholding, durable bounded-loop resumption across approval interruption, and full contract conformance testing in CI. These controls have not been independently security-audited and do not establish production readiness, automatic trust of MCP servers, Streamable HTTP safety, production OAuth/credential safety, production sandboxing, encrypted state handling, distributed coordination, exactly-once side effects, or safe autonomous production side effects.
+Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, Manager-owned MCP tool binding, execution-time MCP schema/identity revalidation, synthetic stdio and Streamable HTTP MCP transport conformance, bounded MCP operation timeouts and cancellation cleanup, same-origin/cross-origin redirect-policy evidence, malformed HTTP response rejection, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, legal state-transition validation, corrupted-state fail-closed handling, recovery-required resolution from explicit evidence, checkpoint-version rejection/migration boundaries, finite multi-step budgets, repeated-action loop detection, sensitive-result withholding, durable bounded-loop resumption across approval interruption, and full contract conformance testing in CI. These controls have not been independently security-audited and do not establish production readiness, automatic trust of MCP servers, production OAuth/credential safety, TLS/mTLS or enterprise egress safety, production sandboxing, encrypted state handling, distributed coordination, exactly-once side effects, or safe autonomous production side effects.
