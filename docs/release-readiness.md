@@ -6,7 +6,7 @@ Manager separates implementation evidence from release claims. A green test suit
 
 **Experimental reference implementation.**
 
-The repository has an executable reference control plane, deterministic policy tests, schema conformance, durable-state tests, and synthetic MCP transport conformance. It has not published a tagged software release and does not claim production readiness.
+The repository has an executable reference control plane, deterministic policy tests, schema conformance, durable-state tests, synthetic MCP transport conformance, supported-Python matrix testing, and reproducible local release-candidate construction. It has not published a tagged software release and does not claim production readiness.
 
 ## Maturity labels
 
@@ -49,6 +49,8 @@ The Python reference runtime currently uses a `0.x.y` version. Until a first sta
 
 The convenience Python surface exported through `manager_runtime.__all__` is the intended package-facing API, but it remains pre-stable until a tagged release defines a compatibility baseline. Internal modules are not compatibility commitments merely because they are importable.
 
+The current package supports the stable CPython lines explicitly exercised in CI: 3.11, 3.12, 3.13, and 3.14. Package metadata is bounded to `>=3.11,<3.15`; prerelease or future Python lines are not supported merely because they happen to import successfully.
+
 ## Release authority
 
 Publishing a package, tag, GitHub Release, container, signed artifact, or other externally distributed release is an external commitment. It requires explicit maintainer intent and verification of the exact release target.
@@ -65,39 +67,49 @@ A release candidate should bind at least:
 
 If the commit, version, artifact, or material release parameters change, prior release approval is stale.
 
-## Stage 13 audit
+## Stage 14 audit
 
-Status on the Stage 13 baseline:
+Status on the Stage 14 baseline:
 
 | Area | Status | Evidence / gap |
 | --- | --- | --- |
 | Protected default branch | Pass | Active ruleset requires pull requests and the `public-safety` status check; deletion and non-fast-forward updates are blocked. |
-| CI permissions | Pass | Repository workflow requests `contents: read` only. |
+| CI permissions | Pass | Required repository workflow requests `contents: read` only. |
 | Unit, eval, schema and MCP transport gates | Pass | Required workflow covers deterministic runtime tests, evals, schema conformance, stdio MCP, and Streamable HTTP MCP. |
 | Public/private leakage controls | Pass with limits | Repository integrity checks scan tracked content and commit-email metadata for high-confidence patterns; this is not a complete secret scanner. |
-| Threat model | Pass after Stage 13 | `docs/threat-model.md` records trust boundaries, threats, mitigations, and residual risks. |
-| API/compatibility policy | Pass after Stage 13 | This document defines the pre-stable Python API and versioning boundary. |
-| Package metadata | Pass after Stage 13 | The reference package uses current SPDX license metadata, includes its license text and README, and exposes project URLs. |
-| Package build/install smoke test | Pass after Stage 13 | CI builds a wheel and imports it from an isolated target directory. |
-| Changelog discipline | Pass after Stage 13 | `CHANGELOG.md` records unreleased changes and explicitly distinguishes development history from tagged releases. |
-| Supported Python matrix | Gap | `requires-python` is `>=3.11`, but CI currently proves only the runner's system Python. |
-| Reproducible dependency baseline | Gap | CI intentionally installs compatible dependency ranges rather than a fully locked, hashed environment. |
-| Private vulnerability reporting | Gap | `SECURITY.md` does not claim that a private reporting channel is enabled. |
-| Release automation and provenance | Gap | No package publication workflow, release signing policy, SBOM, or artifact attestation path is established. |
-| Tagged releases | Gap | No public GitHub release has been published as of this audit baseline. |
+| Threat model | Pass | `docs/threat-model.md` records trust boundaries, threats, mitigations, and residual risks. |
+| API/compatibility policy | Pass | This document defines the pre-stable Python API and versioning boundary. |
+| Package metadata | Pass | The reference package uses SPDX license metadata, includes its license text and README, and exposes project URLs. |
+| Supported Python matrix | Pass after Stage 14 | Required CI exercises Python 3.11, 3.12, 3.13, and 3.14, including wheel build/install/import on each line. |
+| Dependency compatibility lane | Pass after Stage 14 | The supported-Python matrix continues to exercise the package's declared compatible ranges instead of only one frozen environment. |
+| Known-good direct baseline | Pass with limits after Stage 14 | `runtime/python/constraints/known-good.txt` pins direct build, conformance, model-adapter, and MCP dependencies. It is not a complete hashed transitive lock. |
+| Release-candidate reproducibility | Pass after Stage 14 | Required CI builds wheel and sdist twice from the same commit under fixed build inputs and requires matching SHA-256 hashes. |
+| Candidate checksums/provenance | Pass after Stage 14 | Candidate construction writes `SHA256SUMS` and an inspectable `provenance.json` bound to commit, version, build epoch, Python, tools, and artifact hashes. |
+| Candidate artifact workflow | Pass with limits after Stage 14 | Manual read-only workflow can upload a seven-day GitHub Actions candidate artifact; it cannot tag, publish, attest, or mutate repository contents. |
+| Changelog discipline | Pass | `CHANGELOG.md` records unreleased changes and distinguishes development history from tagged releases. |
+| Private vulnerability reporting | Gap | `SECURITY.md` does not claim that a verified private reporting channel is enabled. |
+| Fully locked dependency reconstruction | Gap | The known-good file pins direct dependencies but does not yet provide a complete hashed transitive lock or offline reconstruction guarantee. |
+| Cryptographic release provenance | Gap | Candidate provenance is an inspectable JSON record, not a cryptographic attestation. No release signing, SBOM, or package-registry trusted-publishing path is yet approved. |
+| Tagged releases | Gap | No public GitHub release or package release has been published as of this audit baseline. |
 | Independent security assessment | Gap | The controls have not been independently security-audited. |
 | Production deployment evidence | Gap | No deployment-specific production evidence is claimed. |
 
-## Next release-engineering gates
+## Release-candidate process
 
-Before the first public package release, prefer closing these gaps in order:
+See `docs/release-candidate.md` for the candidate build contract, supported Python lines, dependency lanes, deterministic build inputs, checksum/provenance outputs, and the separation between candidate construction and publication.
 
-1. test every claimed supported Python version;
-2. establish a known-good dependency/build baseline while retaining a separate compatibility lane for allowed ranges;
-3. enable and document a private vulnerability-reporting path;
-4. define a release build/publish workflow with least privilege and artifact provenance;
-5. produce checksums and release notes from the exact approved commit;
-6. run a release-candidate audit against this checklist;
-7. publish only after explicit maintainer approval.
+The manual candidate workflow is preparation only. It does not authorize or perform a public release.
+
+## Remaining first-release gates
+
+Before the first public package release:
+
+1. enable and verify an actionable private vulnerability-reporting path;
+2. decide whether the first release requires a fully hashed transitive lock or whether the known-good direct baseline is sufficient;
+3. define the approved cryptographic provenance/signing/SBOM policy for released artifacts;
+4. produce a release candidate from the exact intended release commit;
+5. verify its checksums, provenance record, changelog, compatibility evidence, and known limitations;
+6. bind explicit maintainer approval to the exact commit, version, artifact hashes, and publication target;
+7. publish only after that approval.
 
 Do not collapse these gates into a claim that the framework is generally secure or production-ready.
