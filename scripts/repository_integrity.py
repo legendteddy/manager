@@ -7,6 +7,7 @@ It intentionally uses high-confidence checks and does not claim to detect every 
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
+CONTRACTS_DIR = ROOT / "contracts"
 
 RISKY_FILENAMES = {
     ".env",
@@ -55,6 +57,28 @@ def is_public_safe_email(address: str) -> bool:
     return lower in SAFE_EMAIL_EXACT or lower.endswith(SAFE_EMAIL_SUFFIXES)
 
 
+def validate_contracts(failures: list[str]) -> None:
+    if not CONTRACTS_DIR.exists():
+        return
+
+    for path in sorted(CONTRACTS_DIR.glob("*.schema.json")):
+        relative = path.relative_to(ROOT).as_posix()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            failures.append(f"invalid contract JSON {relative}: {exc}")
+            continue
+
+        if data.get("$schema") != "https://json-schema.org/draft/2020-12/schema":
+            failures.append(f"contract must declare JSON Schema Draft 2020-12: {relative}")
+        if not isinstance(data.get("$id"), str) or not data["$id"].startswith(
+            "https://github.com/legendteddy/manager/contracts/"
+        ):
+            failures.append(f"contract has missing or unexpected $id: {relative}")
+        if data.get("type") != "object":
+            failures.append(f"contract root type must be object: {relative}")
+
+
 def main() -> int:
     failures: list[str] = []
     warnings: list[str] = []
@@ -82,6 +106,8 @@ def main() -> int:
             if not is_public_safe_email(email):
                 failures.append(f"non-placeholder email address in public file {relative}")
                 break
+
+    validate_contracts(failures)
 
     try:
         log_emails = subprocess.check_output(

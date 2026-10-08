@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/result.schema.json",
+  "title": "Manager Result",
+  "type": "object",
+  "required": ["result_id", "status", "finding", "owner_decision_required"],
+  "properties": {
+    "result_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["complete", "partial", "blocked", "failed", "unverified"]},
+    "finding": {"type": "string"},
+    "recommendation": {"type": "string"},
+    "material_evidence": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+    "assumptions": {"type": "array", "items": {"type": "string"}},
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "uncertainties": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"enum": ["low", "medium", "high", "not_applicable"]},
+    "owner_decision_required": {"type": "boolean"},
+    "decision_request": {"type": ["string", "null"]},
+    "next_handoff": {"type": ["object", "null"], "additionalProperties": true},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
