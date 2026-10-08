@@ -41,6 +41,20 @@ def _openai_tools(request: ModelPayload) -> list[dict[str, Any]]:
     return tools
 
 
+def _openai_input(request: ModelPayload) -> Any:
+    continuation = request.get("continuation")
+    if not continuation:
+        return request["input"]
+    return [
+        {
+            "type": "function_call_output",
+            "call_id": item["proposal_id"],
+            "output": item["output"],
+        }
+        for item in continuation["tool_results"]
+    ]
+
+
 def _tool_proposals(raw: Any) -> list[ModelPayload]:
     proposals: list[ModelPayload] = []
     response_id = _field(raw, "id")
@@ -71,9 +85,11 @@ def _tool_proposals(raw: Any) -> list[ModelPayload]:
 class OpenAIResponsesAdapter:
     """Reference OpenAI adapter using the Responses API.
 
-    Stage 5 exposes only custom function definitions. The provider may propose
-    function calls, but this adapter never executes them. Manager's governed
-    tool runtime owns execution and approval decisions.
+    Manager exposes only application-owned custom function definitions. The
+    provider may propose function calls, but this adapter never executes them.
+    Stage 7 continuation maps Manager's provider-neutral prior-response and
+    verified tool-result envelope to Responses API `previous_response_id` plus
+    `function_call_output` input items.
 
     The OpenAI SDK is optional and imported only when a client is not injected.
     Tests can inject a compatible fake client without credentials or network use.
@@ -96,7 +112,7 @@ class OpenAIResponsesAdapter:
         validate_model_request(request)
         kwargs: dict[str, Any] = {
             "model": request["model"],
-            "input": request["input"],
+            "input": _openai_input(request),
         }
         instructions = request.get("instructions")
         if instructions:
@@ -105,6 +121,9 @@ class OpenAIResponsesAdapter:
             kwargs["max_output_tokens"] = request["max_output_tokens"]
         if request.get("tools"):
             kwargs["tools"] = _openai_tools(request)
+        continuation = request.get("continuation")
+        if continuation:
+            kwargs["previous_response_id"] = continuation["prior_response_ref"]
 
         try:
             raw = self._client.responses.create(**kwargs)

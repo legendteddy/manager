@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/agent-loop-policy.schema.json",
+  "title": "Manager Agent Loop Policy",
+  "type": "object",
+  "required": ["max_model_steps", "max_tool_calls", "max_tool_result_chars"],
+  "properties": {
+    "max_model_steps": {"type": "integer", "minimum": 1},
+    "max_tool_calls": {"type": "integer", "minimum": 0},
+    "max_tool_result_chars": {"type": "integer", "minimum": 1},
+    "repeated_proposal_action": {
+      "const": "block",
+      "description": "The reference policy blocks an exact repeated tool proposal before re-execution."
+    },
+    "approval_reuse": {
+      "const": "never",
+      "description": "Approval from a prior action is not automatically carried into a new loop action."
+    },
+    "partial_over_budget_batch_execution": {
+      "const": false,
+      "description": "If a provider proposes more tool calls than the remaining budget, the reference runtime executes none of that over-budget batch."
+    },
+    "consequential_multi_tool_batch": {
+      "const": "block",
+      "description": "The reference runtime requires consequential tool proposals to be serialized rather than mixed into a multi-tool provider batch."
+    },
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

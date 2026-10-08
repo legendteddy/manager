@@ -2,7 +2,7 @@
 
 This directory contains Manager's first reference runtime.
 
-The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, and a durable approval checkpoint layer. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
+The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, durable approval checkpoints, and a bounded multi-step model/tool continuation loop. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
 
 ## Scope
 
@@ -33,13 +33,19 @@ Implemented:
 - persisted approval interruptions that survive process restart;
 - current authorization, target, request, and tool-definition revalidation on resume;
 - `recovery_required` fail-closed handling after interrupted execution intent;
+- bounded multi-step model/tool continuation through `run_bounded_agent_loop`;
+- finite model-step, tool-call, and tool-result-size budgets;
+- exact repeated-tool loop detection before re-execution;
+- no automatic approval carry-forward between loop actions;
+- sensitive tool-result withholding before model continuation;
+- OpenAI continuation through `previous_response_id` plus `function_call_output`;
 - synthetic tool adapters and unit tests with no live side effects.
 
 Not implemented:
 
 - provider-executed built-in tools or provider-managed MCP execution;
 - arbitrary production tools or credentials;
-- model continuation turns after tool results;
+- durable resumption of the whole multi-step model/tool loop;
 - parallel tool execution;
 - automatic retries of side effects;
 - exactly-once external side effects;
@@ -47,7 +53,7 @@ Not implemented:
 - sandbox/process isolation;
 - encrypted state-at-rest management;
 - distributed locks or high-availability state stores;
-- durable provider conversation/session state;
+- durable provider conversation/session state beyond adapter-level continuation references;
 - multimodal model input;
 - streaming;
 - provider failover or automatic model selection;
@@ -96,11 +102,30 @@ model proposal
 
 Use `ToolRegistry` to register tool metadata and implementations. The model never controls a tool's side-effect class or trusted authorization context.
 
-`run_with_model_and_tools` offers an explicit allowed tool set to the model and then routes returned proposals through the governed tool runtime. Analysis/read tools exposed by the embedding application are treated as in-scope for that model turn. Side-effecting tools still require their separate authorization, intent, target, approval, and verification gates.
+`run_with_model_and_tools` remains the one-round reference path. `run_bounded_agent_loop` adds bounded continuation after successfully executed and verified tool results.
 
-The reference runtime intentionally does not send tool outputs back to the model for another response. That continuation loop is future work.
+## Bounded agent loop
 
-See [`docs/tool-runtime.md`](../../docs/tool-runtime.md) for the policy boundary.
+The Stage 7 loop is intentionally finite and conservative:
+
+```text
+model
+→ proposal
+→ policy
+→ tool
+→ verification
+→ sanitized result
+→ continuation
+→ model
+```
+
+Default reference budgets are four model steps, eight tool calls, and 8,000 characters per serialized tool result. Callers may choose smaller or larger finite values.
+
+Exact repeated tool name + target + arguments stop the loop before a second execution. A proposal batch that exceeds the remaining tool-call budget is not partially executed. Approval objects in reusable authorization context are discarded before each new action so prior approval cannot silently authorize a later step.
+
+Sensitive tool output is replaced with a policy message before model continuation. Non-sensitive output is serialized and truncated to the configured size bound if necessary.
+
+See [`docs/agent-loop.md`](../../docs/agent-loop.md).
 
 ## Durable approval state
 
@@ -118,11 +143,13 @@ On resume, Manager revalidates:
 
 If execution was durably marked `executing` and the process disappeared before recording the outcome, a later resume changes the run to `recovery_required` rather than automatically repeating the action.
 
+Stage 7 does not yet persist the surrounding multi-step model loop across that approval interruption.
+
 See [`docs/run-state.md`](../../docs/run-state.md).
 
 ## Governance boundary
 
-Model and tool proposals remain outside the authority boundary. Durable state does not make an old approval permanently valid: current authorization and the exact reviewed action are checked again before execution.
+Model and tool proposals remain outside the authority boundary. Durable state does not make an old approval permanently valid, and a bounded loop does not make a previous approval reusable.
 
 The SQLite reference adapter is a durability proof, not an encryption layer or universal production datastore recommendation. Embedding applications remain responsible for access control, encryption, retention, backup, and regulatory requirements appropriate to their environment.
 
