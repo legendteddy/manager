@@ -184,7 +184,7 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
 
     def _initialize(self) -> None:
         """Upgrade historical stores while refusing incomplete/future v3 state."""
-        connection = self._connect()
+        connection: sqlite3.Connection | None = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
             tables = {
@@ -197,6 +197,7 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
             if "manager_runs" not in tables or "manager_state_meta" not in tables:
                 connection.rollback()
                 connection.close()
+                connection = None
                 super()._initialize()
                 self._upgrade_v2_to_v3()
                 return
@@ -209,21 +210,20 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
 
             connection.rollback()
             connection.close()
+            connection = None
             # The reviewed v1 -> v2 migration remains implemented by the v2
             # reference class. Once it reaches v2, this wrapper adds the v3
             # database-level mixed-runtime write fence.
             super()._initialize()
             self._upgrade_v2_to_v3()
         except sqlite3.OperationalError as exc:
-            if connection.in_transaction:
+            if connection is not None:
                 connection.rollback()
             raise self._backend_error(exc) from exc
         except Exception:
-            if connection.in_transaction:
+            if connection is not None:
                 connection.rollback()
             raise
         finally:
-            try:
+            if connection is not None:
                 connection.close()
-            except Exception:
-                pass
