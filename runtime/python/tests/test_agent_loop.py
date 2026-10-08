@@ -206,6 +206,41 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual(tool.calls, [])
         self.assertEqual(output["agent_loop"]["tool_calls"], 0)
 
+    def test_consequential_multi_tool_batch_is_serialized_before_any_execution(self) -> None:
+        registry = ToolRegistry()
+        read_tool = RecordingTool()
+        write_tool = RecordingTool()
+        registry.register(definition("lookup"), read_tool)
+        registry.register(definition("update", "reversible_write"), write_tool)
+        adapter = SequenceAdapter(
+            [
+                response(
+                    "resp-1",
+                    proposals=[
+                        proposal("call-1", "read-first", tool_name="lookup"),
+                        proposal("call-2", "write-second", tool_name="update"),
+                    ],
+                )
+            ]
+        )
+
+        output = run_bounded_agent_loop(
+            task_input(),
+            adapter,
+            registry,
+            model="synthetic-model",
+            allowed_tools=["lookup", "update"],
+            authorization_contexts={"update": {"scope_authorized": True}},
+        )
+
+        self.assertEqual(
+            output["agent_loop"]["stop_reason"],
+            "consequential_multi_tool_batch_requires_serialization",
+        )
+        self.assertEqual(read_tool.calls, [])
+        self.assertEqual(write_tool.calls, [])
+        self.assertEqual(output["agent_loop"]["tool_calls"], 0)
+
     def test_prior_approval_is_not_carried_into_new_destructive_action(self) -> None:
         registry = ToolRegistry()
         tool = RecordingTool()
