@@ -29,19 +29,29 @@ The Python matrix exercises the dependency ranges declared by the package and th
 
 This is a known-good direct baseline, not a complete transitive lock. It improves regression diagnosis without falsely claiming that every transitive dependency can be reconstructed offline byte-for-byte from this repository alone.
 
-## Deterministic candidate builder
+## Candidate builder
 
 `scripts/build_release_candidate.py`:
 
 1. verifies the installed direct baseline;
 2. derives `SOURCE_DATE_EPOCH` from the exact Git commit;
 3. fixes `PYTHONHASHSEED` for the build process;
-4. builds one wheel and one source distribution with the pinned build frontend/backend baseline;
-5. calculates SHA-256 hashes;
+4. builds one wheel and one source distribution with the known-good build frontend/backend baseline;
+5. calculates SHA-256 hashes for both artifacts;
 6. writes `SHA256SUMS`;
-7. writes `provenance.json` containing the commit, package version, Python/build-tool versions, build epoch, and artifact hashes.
+7. writes `provenance.json` containing the commit, package version, Python/build-tool versions, build epoch, artifact hashes, and each artifact's verification policy.
 
-The required CI gate builds the candidate twice from the same commit and compares artifact hashes. A mismatch fails the required `public-safety` check.
+### Wheel reproducibility gate
+
+The required CI gate builds the candidate twice from the same commit and requires the wheel filename and SHA-256 hash to match exactly. A wheel mismatch fails the required `public-safety` check.
+
+This establishes byte reproducibility for the wheel in the verified same-environment build path used by CI. It does not establish cross-platform or independently reproduced build equivalence.
+
+### Source distribution integrity
+
+The source distribution is built and SHA-256 recorded, but Manager does **not** currently claim the Setuptools-generated `.tar.gz` is byte-reproducible. CI may observe different sdist hashes across repeated builds without treating that as a wheel-reproducibility failure.
+
+The sdist checksum still provides exact identity for the candidate produced by a particular build. If a future release requires byte-reproducible sdists, that must be established separately rather than inferred from the wheel result.
 
 `provenance.json` is an inspectable build record. It is not a cryptographic attestation and does not authorize release.
 
@@ -70,6 +80,8 @@ release-candidate/
   provenance.json
 ```
 
+The provenance record marks the wheel as `byte_reproducibility_required` and the source distribution as `checksum_integrity_only`.
+
 ## Release approval remains separate
 
 Before any public release, verify the exact candidate against `docs/release-readiness.md` and bind approval to at least:
@@ -89,6 +101,8 @@ If any bound value changes, approval is stale and a new release decision is requ
 
 Stage 14 does not establish:
 
+- byte-reproducible source distributions;
+- cross-platform reproducible builds;
 - a fully hashed transitive lock;
 - offline dependency reconstruction;
 - cryptographic artifact attestation;
