@@ -52,3 +52,7 @@ jobs:
       - name: Run MCP stdio transport conformance
         shell: bash
         run: PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_transport_conformance.py' -v
+
+      - name: Run MCP Streamable HTTP transport conformance
+        shell: bash
+        run: PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_streamable_http_conformance.py' -v

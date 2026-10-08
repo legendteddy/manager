@@ -56,7 +56,7 @@ Immediately before an MCP-backed tool executes, the reference adapter re-discove
 2. the remote tool still exists exactly once;
 3. its input-schema fingerprint still matches the fingerprint reviewed at registration.
 
-A mismatch stops before `tools/call`. This closes the gap where an MCP server changes after registration but before execution.
+A mismatch stops before `tools/call`. This invariant is exercised over both stdio and Streamable HTTP.
 
 ## Execution
 
@@ -96,17 +96,23 @@ python3 -m pip install -e 'runtime/python[mcp]'
 
 The current reference constraint is `mcp>=2.2,<3`.
 
-The SDK target is supplied by the embedding application and remains outside Manager's canonical contracts. This keeps URLs, process commands, credentials, OAuth configuration, and other environment-specific connection material out of the public architecture boundary.
+The SDK target is supplied by the embedding application and remains outside Manager's canonical contracts. A `StdioServerParameters` target uses stdio; a URL target uses the SDK's Streamable HTTP transport. Other SDK-supported transport objects may also be supplied by the embedding application.
 
-The bridge performs discovery before execution and accepts an optional positive `operation_timeout_seconds`. SDK transport errors, nested task-group failures, MCP error results, and configured operation timeouts are normalized into Manager's `MCPBoundaryError` boundary.
+URLs, process commands, credentials, OAuth configuration, HTTP headers, proxy settings, certificates, and other environment-specific connection material remain outside the public architecture boundary.
+
+The bridge performs discovery before execution and accepts an optional positive `operation_timeout_seconds`. SDK transport errors, nested task-group failures, MCP protocol errors, MCP error results, and configured operation timeouts are normalized into Manager's `MCPBoundaryError` boundary.
 
 Each reference operation owns a fresh SDK client context. This favors fail-closed cleanup and reconnectability over connection pooling.
 
-## Stage 11 transport evidence
+## Transport evidence
 
-CI now installs the optional MCP dependency and launches a synthetic MCP server as a real stdio subprocess. The transport-conformance suite proves:
+CI installs the optional MCP dependency and exercises two synthetic local transport paths.
 
-- official SDK discovery over stdio;
+### Stdio
+
+The stdio suite proves:
+
+- official SDK discovery over a real subprocess transport;
 - structured result normalization;
 - governed execution through `ToolRegistry`;
 - schema drift blocking after registration and before remote execution;
@@ -114,6 +120,21 @@ CI now installs the optional MCP dependency and launches a synthetic MCP server 
 - MCP error-result normalization;
 - slow-call timeout/cancellation and subprocess cleanup;
 - successful reconnection after a timed-out call.
+
+### Streamable HTTP
+
+The Streamable HTTP suite proves:
+
+- official SDK URL-target discovery and structured result normalization over loopback HTTP;
+- governed execution through `ToolRegistry`;
+- schema drift blocking before the HTTP remote call body executes;
+- local server restart and reconnect behavior without re-registering the binding;
+- MCP error-result normalization;
+- slow-call timeout/cancellation followed by a successful later call;
+- same-origin method-preserving redirect handling;
+- cross-origin redirect rejection;
+- application-owned synthetic header configuration through the SDK HTTP client;
+- malformed JSON HTTP responses failing closed.
 
 No external MCP service, production credential, or real side effect is used. See [`mcp-transport-conformance.md`](mcp-transport-conformance.md).
 
@@ -126,6 +147,8 @@ In particular:
 - remote tool descriptions may contain prompt injection or misleading safety claims;
 - server annotations are hints, not Manager authorization;
 - credentials and connection targets stay outside public bindings and traces;
+- HTTP redirects must not silently widen the configured origin boundary;
+- malformed transport responses are failures, not valid evidence;
 - returned tool content is untrusted data and follows the same redaction/continuation rules as other tool output;
 - provider-managed MCP execution remains outside the reference path because it would bypass Manager's local policy gate unless an equivalent enforcement mechanism is proven.
 
@@ -139,7 +162,8 @@ The current MCP path does not establish:
 - remote verification of consequential effects by default;
 - production credential handling;
 - OAuth policy or secret storage;
-- Streamable HTTP conformance;
+- TLS/mTLS or enterprise proxy policy;
+- request-scoped SSE response-stream conformance;
 - long-lived connection pooling;
 - distributed MCP session coordination;
 - provider-managed MCP execution;

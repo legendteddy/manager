@@ -2,7 +2,7 @@
 
 This directory contains Manager's first reference runtime.
 
-The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, a Manager-owned MCP adapter boundary, durable approval checkpoints, a bounded multi-step model/tool continuation loop, a durable resumable loop state machine, persisted-state conformance checks, explicit recovery resolution, and an end-to-end synthetic MCP stdio transport test path. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
+The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, a Manager-owned MCP adapter boundary, durable approval checkpoints, a bounded multi-step model/tool continuation loop, a durable resumable loop state machine, persisted-state conformance checks, explicit recovery resolution, and end-to-end synthetic MCP stdio plus Streamable HTTP transport test paths. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
 
 ## Scope
 
@@ -36,8 +36,9 @@ Implemented:
 - MCP server/tool/schema provenance bound into effective registered tool version;
 - application-owned verifier requirement for consequential MCP tools;
 - optional official MCP Python SDK v2 bridge;
-- normalized SDK task-group errors and optional operation-level timeouts;
+- normalized SDK task-group/protocol errors and optional operation-level timeouts;
 - official-SDK stdio subprocess conformance tests for discovery, governed execution, result normalization, schema drift, disappearance/reconnect, error results, timeout cancellation, and post-timeout reconnect;
+- official-SDK Streamable HTTP loopback conformance tests for URL discovery, governed execution, result normalization, schema drift, server restart/reconnect, error results, timeout cancellation, same-origin redirect handling, cross-origin redirect rejection, application-owned synthetic headers, and malformed-response rejection;
 - SQLite durable run checkpoints using the Python standard library;
 - optimistic revision checks for state updates;
 - persisted-state shape validation and legal transition enforcement;
@@ -68,7 +69,8 @@ Not implemented:
 - provider-executed built-in tools or provider-managed MCP execution;
 - automatic trust or registration of arbitrary MCP servers/tools;
 - production MCP credentials, OAuth policy, or secret storage;
-- Streamable HTTP transport conformance;
+- production TLS/mTLS, certificate, proxy, or enterprise egress policy;
+- request-scoped SSE response-stream conformance;
 - long-lived MCP connection pooling or distributed MCP session coordination;
 - arbitrary production tools or credentials;
 - exactly-once provider calls;
@@ -81,7 +83,7 @@ Not implemented:
 - distributed locks, leases, or high-availability state stores;
 - automatic reconciliation with arbitrary external systems;
 - multimodal model input;
-- streaming;
+- streaming model output;
 - provider failover or automatic model selection;
 - production readiness or private-reference parity.
 
@@ -130,7 +132,7 @@ python3 -m pip install -e 'runtime/python[mcp]'
 
 The reference extra currently targets the official MCP Python SDK v2 line with `mcp>=2.2,<3`.
 
-`OfficialMCPClient` adapts SDK discovery and tool calls to Manager's small synchronous `MCPClient` protocol. Connection targets and credentials are supplied by the embedding application and are not part of canonical Manager contracts.
+`OfficialMCPClient` adapts SDK discovery and tool calls to Manager's small synchronous `MCPClient` protocol. Connection targets and credentials are supplied by the embedding application and are not part of canonical Manager contracts. A `StdioServerParameters` target uses stdio; a URL target uses the SDK's Streamable HTTP transport.
 
 MCP discovery does not grant authority. Use `register_mcp_bindings(...)` with explicit local bindings. Only configured tools are registered, the discovered input schema must match the reviewed local schema exactly, and remote descriptions or annotations never become Manager policy automatically.
 
@@ -138,7 +140,7 @@ Before an MCP-backed tool call, the adapter re-discovers the selected tool and v
 
 Consequential MCP tools must provide an application-owned verifier. A successful MCP tool response alone is not treated as independent verification of a real-world side effect.
 
-`OfficialMCPClient` also accepts an optional positive `operation_timeout_seconds`. Timeout, transport, nested task-group, and MCP error-result failures are normalized into `MCPBoundaryError`.
+`OfficialMCPClient` also accepts an optional positive `operation_timeout_seconds`. Timeout, transport, nested task-group, MCP protocol, and MCP error-result failures are normalized into `MCPBoundaryError`.
 
 Run the dedicated stdio transport suite with:
 
@@ -146,7 +148,17 @@ Run the dedicated stdio transport suite with:
 PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_transport_conformance.py' -v
 ```
 
-The suite launches only a synthetic local subprocess and uses no external network service or credential. See [`docs/mcp-adapters.md`](../../docs/mcp-adapters.md) and [`docs/mcp-transport-conformance.md`](../../docs/mcp-transport-conformance.md).
+Run the dedicated Streamable HTTP transport suite with:
+
+```bash
+PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_streamable_http_conformance.py' -v
+```
+
+The stdio suite launches only a synthetic local subprocess. The HTTP suite launches only a synthetic loopback server and local HTTP stubs. Neither suite uses an external MCP service, production credential, or real external side effect.
+
+The HTTP suite proves the tested SDK path for governed calls, schema drift, server restart, timeout/cancellation, same-origin versus cross-origin redirect behavior, application-owned synthetic headers, and malformed-response rejection. It does not define production OAuth, TLS/mTLS, proxy, certificate, egress, or streaming-response policy.
+
+See [`docs/mcp-adapters.md`](../../docs/mcp-adapters.md) and [`docs/mcp-transport-conformance.md`](../../docs/mcp-transport-conformance.md).
 
 ## Governed custom tools
 
@@ -250,4 +262,4 @@ Model, MCP discovery metadata, and tool proposals remain outside the authority b
 
 The SQLite reference adapter is a durability proof, not an encryption layer or universal production datastore recommendation. Embedding applications remain responsible for access control, encryption, retention, backup, and regulatory requirements appropriate to their environment.
 
-A green test, eval, schema-conformance run, or synthetic MCP transport run demonstrates only the behavior and artifacts actually encoded and tested. It does not establish general reasoning quality, provider uptime, arbitrary MCP-server trustworthiness, Streamable HTTP conformance, security completeness, distributed exactly-once execution, private-reference parity, deployment readiness, or production suitability.
+A green test, eval, schema-conformance run, or synthetic MCP transport run demonstrates only the behavior and artifacts actually encoded and tested. It does not establish general reasoning quality, provider uptime, arbitrary MCP-server trustworthiness, production OAuth/TLS/proxy safety, request-scoped SSE behavior, security completeness, distributed exactly-once execution, private-reference parity, deployment readiness, or production suitability.
