@@ -49,6 +49,19 @@ class OfficialMCPClient:
             return value.model_dump(by_alias=True, exclude_none=True)
         return value
 
+    @staticmethod
+    def _find_nested_exception(
+        error: BaseException, expected: type[BaseException]
+    ) -> BaseException | None:
+        if isinstance(error, expected):
+            return error
+        if isinstance(error, BaseExceptionGroup):
+            for nested in error.exceptions:
+                match = OfficialMCPClient._find_nested_exception(nested, expected)
+                if match is not None:
+                    return match
+        return None
+
     def _run_operation(
         self, operation: str, function: Callable[[], Awaitable[T]]
     ) -> T:
@@ -62,11 +75,15 @@ class OfficialMCPClient:
 
         try:
             return anyio.run(guarded)
-        except TimeoutError as exc:
-            raise MCPBoundaryError(f"MCP {operation} timed out") from exc
-        except MCPBoundaryError:
-            raise
         except Exception as exc:
+            timeout = self._find_nested_exception(exc, TimeoutError)
+            if timeout is not None:
+                raise MCPBoundaryError(f"MCP {operation} timed out") from timeout
+
+            boundary = self._find_nested_exception(exc, MCPBoundaryError)
+            if boundary is not None:
+                raise MCPBoundaryError(str(boundary)) from boundary
+
             raise MCPBoundaryError(
                 f"MCP {operation} failed: {type(exc).__name__}: {exc}"
             ) from exc
