@@ -1,28 +1,19 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import datetime, timezone
 from typing import Any
 
-from .base import ToolPayload, ToolRegistry, validate_arguments, validate_tool_request
+from .base import (
+    ToolPayload,
+    ToolRegistry,
+    tool_request_fingerprint,
+    validate_arguments,
+    validate_tool_request,
+)
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _fingerprint(request: ToolPayload) -> str:
-    payload = json.dumps(
-        {
-            "tool_name": request["tool_name"],
-            "target": request.get("target"),
-            "arguments": request["arguments"],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 def _approval_packet(
@@ -48,8 +39,9 @@ def _approval_packet(
         "recovery": "No additional side effect is performed until authorization is current.",
         "issued_at": _now(),
         "resolved_at": None,
+        "resolved_by": None,
         "approved_by": None,
-        "action_fingerprint": _fingerprint(request),
+        "action_fingerprint": tool_request_fingerprint(request),
     }
 
 
@@ -95,7 +87,7 @@ def _approval_state(
     reason: str,
 ) -> tuple[bool, ToolPayload]:
     supplied = authorization.get("approval")
-    expected = _fingerprint(request)
+    expected = tool_request_fingerprint(request)
     if not isinstance(supplied, dict):
         return False, _approval_packet(
             request,
