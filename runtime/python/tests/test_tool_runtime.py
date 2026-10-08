@@ -35,6 +35,7 @@ def request(name: str, arguments: dict, *, target: str | None = None) -> dict:
 def definition(name: str, side_effect_class: str, *, verify: bool) -> dict:
     return {
         "name": name,
+        "version": "1",
         "description": f"Synthetic {name} tool.",
         "side_effect_class": side_effect_class,
         "input_schema": {
