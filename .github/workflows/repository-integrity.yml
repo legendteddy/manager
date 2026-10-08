@@ -24,3 +24,15 @@ jobs:
       - name: Run repository integrity checks
         shell: bash
         run: python3 scripts/repository_integrity.py
+
+      - name: Compile Python reference runtime
+        shell: bash
+        run: python3 -m compileall -q runtime/python
+
+      - name: Run Python reference runtime unit tests
+        shell: bash
+        run: PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -v
+
+      - name: Run deterministic behavioral evals
+        shell: bash
+        run: PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases

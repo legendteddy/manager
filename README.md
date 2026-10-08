@@ -8,7 +8,7 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Foundation stage.** The repository currently defines architecture, governance, security, migration, reconciliation, public/private boundaries, eval strategy, and repository operating rules. It does not yet claim a production runtime, behavioral parity with the private reference, or production readiness.
+**Early reference-runtime stage.** The repository defines architecture, governance, security, machine-readable contracts, synthetic eval fixtures, and a small Python reference control plane. The reference runtime demonstrates selected deterministic routing, approval, handoff, reconciliation, and public-safety behaviors. It does not yet claim a production runtime, general-purpose task execution, behavioral parity with the private reference, or production readiness.
 
 ## Core principles
 
@@ -68,6 +68,18 @@ tracing + evals
 
 Internal components use conventional technical terms such as `orchestrator`, `router`, `capability`, `specialist agent`, `policy`, `approval`, `state`, `evaluator`, `reconciliation`, `tracing`, `eval`, and `adapter`.
 
+## Reference runtime
+
+The first reference runtime is implemented in Python under [`runtime/python/`](runtime/python/). Python is an implementation choice for the reference runtime, not a canonical requirement for Manager.
+
+From the repository root:
+
+```bash
+PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
+```
+
+The current runtime is a deterministic control plane. It does not call model providers or execute arbitrary external side effects.
+
 ## Manager, MCP, and product integrations
 
 Manager is the core framework/runtime concept.
@@ -84,13 +96,15 @@ Provider- or product-specific behavior belongs behind adapters rather than insid
 - [`GOVERNANCE.md`](GOVERNANCE.md): authority, accountability, materiality, approvals, and bounded evolution
 - [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, and public safety
 - [`AGENTS.md`](AGENTS.md): instructions for AI systems working in this repository
+- [`contracts/`](contracts/): provider-neutral machine-readable contracts
+- [`runtime/python/`](runtime/python/): first reference control-plane runtime
 - [`docs/handoffs.md`](docs/handoffs.md): bounded delegation contract
 - [`docs/reconciliation.md`](docs/reconciliation.md): authoritative-state reconciliation
 - [`docs/evidence.md`](docs/evidence.md): evidence and claim discipline
 - [`docs/protected-surfaces.md`](docs/protected-surfaces.md): governance surfaces excluded from automatic evolution
 - [`docs/public-private-boundary.md`](docs/public-private-boundary.md): publication boundary
 - [`docs/migration.md`](docs/migration.md): generic migration and parity gates
-- [`evals/README.md`](evals/README.md): behavioral eval strategy
+- [`evals/README.md`](evals/README.md): behavioral eval strategy and execution status
 - [`examples/README.md`](examples/README.md): synthetic example policy
 
 ## License
@@ -99,4 +113,4 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has a language-neutral architectural foundation. Runtime contracts, a reference implementation, executable evals, adapters, and interoperability integrations are future implementation work. Claims such as "validated", "secure", "behaviorally equivalent", or "production-ready" require evidence for that exact claim.
+Manager has a language-neutral architectural foundation, public machine-readable contracts, synthetic deterministic eval fixtures, and a small Python reference control plane. It does not yet have provider adapters, general-purpose orchestration, durable approval/state infrastructure, or production side effects. Claims such as "validated", "secure", "behaviorally equivalent", or "production-ready" require evidence for that exact claim.

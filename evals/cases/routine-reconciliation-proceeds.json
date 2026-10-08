@@ -25,8 +25,8 @@
     "human_escalation_required": false
   },
   "deterministic_assertions": [
-    {"subject": "reconciliation", "path": "materiality", "operator": "equals", "value": "routine"},
-    {"subject": "reconciliation", "path": "authoritative_target", "operator": "exists"},
-    {"subject": "reconciliation", "path": "verification.status", "operator": "equals", "value": "verified"}
+    {"subject": "reconciliation", "path": "classification", "operator": "equals", "value": "routine"},
+    {"subject": "reconciliation", "path": "authoritative_owner", "operator": "exists"},
+    {"subject": "reconciliation", "path": "verification.status", "operator": "equals", "value": "pass"}
   ]
 }
