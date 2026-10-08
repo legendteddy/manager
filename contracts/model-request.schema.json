@@ -11,7 +11,7 @@
     "input": {
       "type": "string",
       "minLength": 1,
-      "description": "Text input for the v1 provider-neutral reference contract."
+      "description": "Text input for the provider-neutral reference contract. For continuation turns this describes the bounded purpose of the turn; native provider adapters may map continuation.tool_results to structured provider input."
     },
     "max_output_tokens": {"type": "integer", "minimum": 1},
     "tools": {
@@ -27,6 +27,33 @@
         "additionalProperties": false
       },
       "uniqueItems": true
+    },
+    "continuation": {
+      "type": "object",
+      "required": ["prior_response_ref", "tool_results"],
+      "properties": {
+        "prior_response_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-neutral reference to the immediately prior model response."
+        },
+        "tool_results": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["proposal_id", "status", "output"],
+            "properties": {
+              "proposal_id": {"type": "string", "minLength": 1},
+              "status": {"enum": ["executed"]},
+              "output": {"type": "string"},
+              "redacted": {"type": "boolean", "default": false}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
     },
     "metadata": {"type": "object", "additionalProperties": true},
     "extensions": {"type": "object", "additionalProperties": true}
