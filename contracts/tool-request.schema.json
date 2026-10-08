@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/tool-request.schema.json",
+  "title": "Manager Tool Request",
+  "type": "object",
+  "required": ["request_id", "run_id", "tool_name", "arguments", "proposed_by"],
+  "properties": {
+    "request_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "tool_name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "arguments": {"type": "object", "additionalProperties": true},
+    "target": {"type": ["string", "null"]},
+    "proposed_by": {"enum": ["model", "primary_agent", "human", "system"]},
+    "proposal_ref": {"type": ["string", "null"]},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
