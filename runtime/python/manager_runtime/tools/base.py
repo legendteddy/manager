@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -75,6 +77,38 @@ class ToolRegistry:
         return definitions
 
 
+def _stable_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def tool_request_fingerprint(request: ToolPayload) -> str:
+    """Bind approval to the exact tool identity, target, and arguments."""
+    return _stable_digest(
+        {
+            "tool_name": request["tool_name"],
+            "target": request.get("target"),
+            "arguments": request["arguments"],
+        }
+    )
+
+
+def tool_definition_fingerprint(definition: ToolPayload) -> str:
+    """Identify policy-relevant tool metadata reviewed at checkpoint time."""
+    return _stable_digest(
+        {
+            "name": definition["name"],
+            "version": definition.get("version"),
+            "side_effect_class": definition["side_effect_class"],
+            "input_schema": definition["input_schema"],
+            "requires_verification": definition["requires_verification"],
+            "sensitive_output": bool(definition.get("sensitive_output", False)),
+        }
+    )
+
+
 def validate_tool_definition(definition: ToolPayload) -> None:
     required = (
         "name",
@@ -99,6 +133,10 @@ def validate_tool_definition(definition: ToolPayload) -> None:
         and not definition["requires_verification"]
     ):
         raise ValueError("consequential tools must require verification")
+    if definition["side_effect_class"] in CONSEQUENTIAL_CLASSES:
+        version = definition.get("version")
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError("consequential tools must declare a non-empty version")
 
 
 def validate_tool_request(request: ToolPayload) -> None:
