@@ -11,7 +11,7 @@ The format is intentionally simple while the project remains pre-stable. Release
 - add required Python 3.11, 3.12, 3.13, and 3.14 compatibility coverage, including wheel build/install/import on every advertised line;
 - bound the current Python package metadata to `>=3.11,<3.15` so future prerelease Python versions are not silently claimed as supported;
 - add an exact known-good direct dependency and build-tool baseline while retaining a separate compatibility lane for declared version ranges;
-- add deterministic local release-candidate construction using commit-derived `SOURCE_DATE_EPOCH`, repeat-build SHA-256 comparison, `SHA256SUMS`, and an inspectable provenance record;
+- add local release-candidate construction using commit-derived `SOURCE_DATE_EPOCH`, blocking repeat-build wheel SHA-256 comparison, checksum identity for the source distribution, `SHA256SUMS`, and an inspectable provenance record;
 - add a manual read-only release-candidate workflow that uploads a short-lived GitHub Actions artifact without tagging, publishing, attesting, or mutating repository contents;
 - document the candidate build contract and the remaining separation between release preparation and release approval.
 
