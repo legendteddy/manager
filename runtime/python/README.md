@@ -2,7 +2,7 @@
 
 This directory contains Manager's first reference runtime.
 
-The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, durable approval checkpoints, a bounded multi-step model/tool continuation loop, a durable resumable loop state machine, persisted-state conformance checks, and explicit recovery resolution. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
+The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, a Manager-owned MCP adapter boundary, durable approval checkpoints, a bounded multi-step model/tool continuation loop, a durable resumable loop state machine, persisted-state conformance checks, and explicit recovery resolution. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
 
 ## Scope
 
@@ -28,6 +28,13 @@ Implemented:
 - stale tool-approval rejection after target or argument changes;
 - application-owned versioning for consequential tool definitions;
 - required verification for consequential tool classes;
+- provider-neutral `MCPClient` protocol;
+- explicit allowlisted MCP tool bindings into `ToolRegistry`;
+- remote MCP descriptions/annotations excluded from trusted policy metadata;
+- exact remote input-schema matching before MCP registration;
+- MCP server/tool/schema provenance bound into effective registered tool version;
+- application-owned verifier requirement for consequential MCP tools;
+- optional official MCP Python SDK v2 bridge;
 - SQLite durable run checkpoints using the Python standard library;
 - optimistic revision checks for state updates;
 - persisted-state shape validation and legal transition enforcement;
@@ -56,6 +63,9 @@ Implemented:
 Not implemented:
 
 - provider-executed built-in tools or provider-managed MCP execution;
+- automatic trust or registration of arbitrary MCP servers/tools;
+- production MCP credentials, OAuth policy, or secret storage;
+- long-lived MCP connection pooling or distributed MCP session coordination;
 - arbitrary production tools or credentials;
 - exactly-once provider calls;
 - exactly-once external side effects;
@@ -92,7 +102,7 @@ python3 -m pip install -e 'runtime/python[conformance]'
 PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
 ```
 
-The conformance dependency is test-only. Normal reference-runtime execution remains zero-dependency unless an optional provider extra is installed.
+The conformance dependency is test-only. Normal reference-runtime execution remains zero-dependency unless an optional provider or protocol extra is installed.
 
 ## OpenAI reference adapter
 
@@ -106,6 +116,24 @@ The adapter uses the official Python SDK's Responses API. Credentials are suppli
 
 Model selection is explicit. Manager deliberately does not hard-code a default model.
 
+## MCP reference adapter
+
+Install the optional MCP dependency:
+
+```bash
+python3 -m pip install -e 'runtime/python[mcp]'
+```
+
+The reference extra currently targets the official MCP Python SDK v2 line with `mcp>=2.2,<3`.
+
+`OfficialMCPClient` adapts SDK discovery and tool calls to Manager's small synchronous `MCPClient` protocol. Connection targets and credentials are supplied by the embedding application and are not part of canonical Manager contracts.
+
+MCP discovery does not grant authority. Use `register_mcp_bindings(...)` with explicit local bindings. Only configured tools are registered, the discovered input schema must match the reviewed local schema exactly, and remote descriptions or annotations never become Manager policy automatically.
+
+Consequential MCP tools must provide an application-owned verifier. A successful MCP tool response alone is not treated as independent verification of a real-world side effect.
+
+See [`docs/mcp-adapters.md`](../../docs/mcp-adapters.md).
+
 ## Governed custom tools
 
 The reference path offers only application-owned custom function definitions to the model. The provider may propose a function call, but the provider adapter does not execute it.
@@ -115,7 +143,7 @@ model proposal
 → Manager ToolRequest
 → trusted ToolRegistry metadata
 → deterministic policy / approval
-→ adapter execution when allowed
+→ native or Manager-owned MCP adapter execution when allowed
 → verification when required
 → ToolResult + trace event
 ```
@@ -186,7 +214,7 @@ run_durable_agent_loop(...)
 
 Durable mode is stricter than the non-durable loop. `reversible_write`, `external_commitment`, and `sensitive_destructive` actions always require a durable approval checkpoint before execution, even when the lower-level tool policy might otherwise permit a routine reversible write.
 
-Restart does not reset model/tool budgets or exact repeated-action detection. The checkpoint also binds the provider, model, allowed tool set, and trusted tool-definition fingerprints.
+Restart does not reset model/tool budgets or exact repeated-action detection. The checkpoint also binds the provider, model, allowed tool set, and trusted tool-definition fingerprints. MCP-backed tools additionally include binding provenance in their effective registered version, so configured server/tool/schema drift invalidates the durable definition fingerprint.
 
 A provider call can still be reissued if a process fails after the provider responds but before the next local checkpoint. Manager therefore does not claim exactly-once provider calls.
 
@@ -204,8 +232,8 @@ See [`docs/conformance-recovery.md`](../../docs/conformance-recovery.md).
 
 ## Governance boundary
 
-Model and tool proposals remain outside the authority boundary. Durable state does not make an old approval permanently valid, and a bounded loop does not make a previous approval reusable.
+Model, MCP discovery metadata, and tool proposals remain outside the authority boundary. Durable state does not make an old approval permanently valid, and a bounded loop does not make a previous approval reusable.
 
 The SQLite reference adapter is a durability proof, not an encryption layer or universal production datastore recommendation. Embedding applications remain responsible for access control, encryption, retention, backup, and regulatory requirements appropriate to their environment.
 
-A green test, eval, or schema-conformance run demonstrates only the behavior and artifacts actually encoded and tested. It does not establish general reasoning quality, provider uptime, security completeness, distributed exactly-once execution, private-reference parity, deployment readiness, or production suitability.
+A green test, eval, or schema-conformance run demonstrates only the behavior and artifacts actually encoded and tested. It does not establish general reasoning quality, provider uptime, MCP-server trustworthiness, security completeness, distributed exactly-once execution, private-reference parity, deployment readiness, or production suitability.
