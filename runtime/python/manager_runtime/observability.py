@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import re
 import threading
 import time
@@ -10,6 +11,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from itertools import islice
 from typing import Any, Iterator, Mapping, Protocol, runtime_checkable
 
 _REDACTED = "[REDACTED]"
@@ -23,6 +25,7 @@ _SAFE_LABEL_KEYS = {
     "transport", "component", "outcome",
 }
 _SAFE_EVENT_NAME = re.compile(r"^[a-z][a-z0-9_.-]{0,95}$")
+_SAFE_METRIC_NAME = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:.-]{0,95}$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9:._-]{1,128}$")
 _BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+\-/]+=*")
 _SECRETISH = re.compile(r"(?i)\b(?:sk|pk|api)[-_][A-Za-z0-9_-]{12,}\b")
@@ -32,64 +35,113 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _hash_text(text: str) -> str:
+    hasher = hashlib.sha256()
+    for offset in range(0, len(text), 4096):
+        hasher.update(text[offset : offset + 4096].encode("utf-8", errors="replace"))
+    return hasher.hexdigest()
+
+
 def safe_identifier(value: Any) -> str | None:
+    """Normalize correlation identifiers without invoking arbitrary object code."""
     if value is None:
         return None
-    text = str(value)
-    if _SAFE_IDENTIFIER.fullmatch(text):
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, int) and not isinstance(value, bool):
+        text = str(value)
+    elif isinstance(value, bytes):
+        return f"hash:{hashlib.sha256(value).hexdigest()[:20]}"
+    else:
+        typename = f"{type(value).__module__}.{type(value).__qualname__}"
+        return f"hash:{hashlib.sha256(typename.encode()).hexdigest()[:20]}"
+    if _SAFE_IDENTIFIER.fullmatch(text) and _SECRETISH.search(text) is None:
         return text
-    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:20]
-    return f"hash:{digest}"
+    return f"hash:{_hash_text(text)[:20]}"
+
+
+def _safe_key(key: Any) -> str:
+    if isinstance(key, str):
+        return key[:96]
+    return f"<{type(key).__name__}>"
 
 
 def _sensitive_key(key: Any) -> bool:
-    normalized = str(key).strip().lower().replace("-", "_")
+    if not isinstance(key, str):
+        return False
+    normalized = key.strip().lower().replace("-", "_")
     return any(fragment in normalized for fragment in _SECRET_KEY_FRAGMENTS)
 
 
 def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> Any:
     """Return a bounded telemetry-safe representation.
 
-    This is intentionally lossy. Telemetry is not a debugging dump channel.
+    Traversal and retained output are both bounded. Arbitrary object string
+    methods are never invoked. Telemetry is not a debugging dump channel.
     """
+    if not isinstance(max_depth, int) or isinstance(max_depth, bool) or max_depth < 0:
+        raise ValueError("max_depth must be a non-negative integer")
+    if not isinstance(max_string_chars, int) or isinstance(max_string_chars, bool) or max_string_chars < 1:
+        raise ValueError("max_string_chars must be a positive integer")
+
     def visit(current: Any, depth: int) -> Any:
         if depth > max_depth:
             return "[TRUNCATED_DEPTH]"
-        if current is None or isinstance(current, (bool, int, float)):
+        if current is None or isinstance(current, (bool, int)):
             return current
+        if isinstance(current, float):
+            return current if math.isfinite(current) else "[NON_FINITE_NUMBER]"
         if isinstance(current, str):
-            text = _BEARER.sub("Bearer [REDACTED]", current)
+            # Only scan a bounded prefix because text after max_string_chars is
+            # never retained in telemetry anyway.
+            bounded = current[: max_string_chars + 128]
+            text = _BEARER.sub("Bearer [REDACTED]", bounded)
             text = _SECRETISH.sub(_REDACTED, text)
-            if len(text) > max_string_chars:
+            if len(current) > max_string_chars or len(text) > max_string_chars:
                 return text[:max_string_chars] + "...[TRUNCATED]"
             return text
         if isinstance(current, Mapping):
             result: dict[str, Any] = {}
-            for key, item in list(current.items())[:64]:
-                skey = str(key)[:96]
+            entries = list(islice(current.items(), 65))
+            for key, item in entries[:64]:
+                skey = _safe_key(key)
                 result[skey] = _REDACTED if _sensitive_key(key) else visit(item, depth + 1)
-            if len(current) > 64:
-                result["_truncated_items"] = len(current) - 64
+            if len(entries) > 64:
+                result["_truncated_items"] = True
             return result
         if isinstance(current, (list, tuple, set, frozenset)):
-            items = list(current)
+            items = list(islice(current, 65))
             result = [visit(item, depth + 1) for item in items[:64]]
             if len(items) > 64:
-                result.append(f"[TRUNCATED_ITEMS:{len(items) - 64}]")
+                result.append("[TRUNCATED_ITEMS]")
             return result
         return f"<{type(current).__name__}>"
 
     return visit(value, 0)
 
 
+def _safe_label_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and math.isfinite(value):
+        return str(value)
+    return f"type:{type(value).__name__}"
+
+
 def safe_labels(labels: Mapping[str, Any] | None) -> dict[str, str]:
     result: dict[str, str] = {}
     for key, value in (labels or {}).items():
-        if key not in _SAFE_LABEL_KEYS:
+        if not isinstance(key, str) or key not in _SAFE_LABEL_KEYS:
             continue
-        text = str(value)
+        text = _safe_label_value(value)
         if len(text) > 64 or not re.fullmatch(r"[A-Za-z0-9:._/-]+", text):
-            text = f"hash:{hashlib.sha256(text.encode()).hexdigest()[:12]}"
+            text = f"hash:{_hash_text(text)[:12]}"
         result[key] = text
     return result
 
@@ -114,6 +166,18 @@ class Correlation:
             tool_request_id=safe_identifier(values.get("tool_request_id")),
             state_revision=revision,
         )
+
+
+def _safe_correlation(value: Correlation | None) -> Correlation:
+    if not isinstance(value, Correlation):
+        return Correlation()
+    return Correlation.from_values(
+        request_id=value.request_id,
+        run_id=value.run_id,
+        model_request_id=value.model_request_id,
+        tool_request_id=value.tool_request_id,
+        state_revision=value.state_revision,
+    )
 
 
 @dataclass(frozen=True)
@@ -153,8 +217,10 @@ class TelemetrySink(Protocol):
 class NullTelemetrySink:
     def emit_event(self, event: StructuredEvent) -> None:
         return None
+
     def emit_metric(self, metric: MetricPoint) -> None:
         return None
+
     def emit_span(self, span: SpanRecord) -> None:
         return None
 
@@ -199,7 +265,7 @@ class JsonLoggingSink:
 
     def _write(self, kind: str, value: Any) -> None:
         payload = {"telemetry_type": kind, **asdict(value)}
-        self.logger.info(json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str))
+        self.logger.info(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
     def emit_event(self, event: StructuredEvent) -> None:
         self._write("event", event)
@@ -239,9 +305,14 @@ class SafeTelemetry:
         correlation: Correlation | None = None,
         attributes: Mapping[str, Any] | None = None,
     ) -> None:
-        if not _SAFE_EVENT_NAME.fullmatch(name):
+        if not isinstance(name, str) or not _SAFE_EVENT_NAME.fullmatch(name):
             name = "telemetry.invalid_event_name"
-        event = StructuredEvent(_now(), name, correlation or Correlation(), redact(dict(attributes or {})))
+        safe_attributes = redact(attributes or {})
+        if not isinstance(safe_attributes, dict):
+            safe_attributes = {"value": safe_attributes}
+        event = StructuredEvent(
+            _now(), name, _safe_correlation(correlation), safe_attributes
+        )
         try:
             self.sink.emit_event(event)
         except Exception:
@@ -250,7 +321,10 @@ class SafeTelemetry:
     def metric(self, name: str, kind: str, value: float, *, labels: Mapping[str, Any] | None = None) -> None:
         if kind not in {"counter", "gauge", "histogram"}:
             raise ValueError("metric kind must be counter, gauge, or histogram")
-        point = MetricPoint(_now(), name[:96], kind, float(value), safe_labels(labels))
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+            raise ValueError("metric value must be a finite number")
+        safe_name = name if isinstance(name, str) and _SAFE_METRIC_NAME.fullmatch(name) else "manager_invalid_metric"
+        point = MetricPoint(_now(), safe_name, kind, float(value), safe_labels(labels))
         try:
             self.sink.emit_metric(point)
         except Exception:
@@ -272,9 +346,10 @@ class SafeTelemetry:
             status = "failed"
             raise
         finally:
+            safe_name = name if isinstance(name, str) and _SAFE_EVENT_NAME.fullmatch(name) else "telemetry.invalid_span_name"
             span = SpanRecord(
-                _now(), name[:96], max(0.0, time.monotonic() - started), status,
-                correlation or Correlation(), safe_labels(labels),
+                _now(), safe_name, max(0.0, time.monotonic() - started), status,
+                _safe_correlation(correlation), safe_labels(labels),
             )
             try:
                 self.sink.emit_span(span)
