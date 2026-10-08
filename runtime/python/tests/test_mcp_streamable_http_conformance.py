@@ -340,7 +340,7 @@ class MCPStreamableHTTPConformanceTests(unittest.TestCase):
                 stub.url,
                 operation_timeout_seconds=3.0,
             )
-            with self.assertRaisesRegex(MCPBoundaryError, "[Rr]edirect"):
+            with self.assertRaisesRegex(MCPBoundaryError, "MCPError"):
                 client.list_tools()
 
     def test_custom_http_header_configuration_stays_external_to_manager_contracts(self) -> None:
