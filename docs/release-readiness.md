@@ -6,7 +6,7 @@ Manager separates implementation evidence from release claims. A green test suit
 
 **Experimental reference implementation.**
 
-The repository has an executable reference control plane, deterministic policy tests, schema conformance, durable-state tests, synthetic MCP transport conformance, supported-Python matrix testing, and reproducible local release-candidate construction. It has not published a tagged software release and does not claim production readiness.
+The repository has an executable reference control plane, deterministic policy tests, schema conformance, durable-state tests, synthetic MCP transport conformance, supported-Python matrix testing, and release-candidate construction with a reproducible wheel plus checksummed source distribution. It has not published a tagged software release and does not claim production readiness.
 
 ## Maturity labels
 
@@ -83,20 +83,22 @@ Status on the Stage 14 baseline:
 | Supported Python matrix | Pass after Stage 14 | Required CI exercises Python 3.11, 3.12, 3.13, and 3.14, including wheel build/install/import on each line. |
 | Dependency compatibility lane | Pass after Stage 14 | The supported-Python matrix continues to exercise the package's declared compatible ranges instead of only one frozen environment. |
 | Known-good direct baseline | Pass with limits after Stage 14 | `runtime/python/constraints/known-good.txt` pins direct build, conformance, model-adapter, and MCP dependencies. It is not a complete hashed transitive lock. |
-| Release-candidate reproducibility | Pass after Stage 14 | Required CI builds wheel and sdist twice from the same commit under fixed build inputs and requires matching SHA-256 hashes. |
-| Candidate checksums/provenance | Pass after Stage 14 | Candidate construction writes `SHA256SUMS` and an inspectable `provenance.json` bound to commit, version, build epoch, Python, tools, and artifact hashes. |
+| Wheel reproducibility | Pass after Stage 14 | Required CI builds the wheel twice from the same commit under the same verified build inputs and requires matching SHA-256 hashes. |
+| Source distribution identity | Pass with explicit limit after Stage 14 | The sdist is built and checksummed, but the current Setuptools `.tar.gz` path is not claimed byte-reproducible. |
+| Candidate checksums/provenance | Pass after Stage 14 | Candidate construction writes `SHA256SUMS` and an inspectable `provenance.json` bound to commit, version, build epoch, Python, tools, artifact hashes, and verification policy. |
 | Candidate artifact workflow | Pass with limits after Stage 14 | Manual read-only workflow can upload a seven-day GitHub Actions candidate artifact; it cannot tag, publish, attest, or mutate repository contents. |
 | Changelog discipline | Pass | `CHANGELOG.md` records unreleased changes and distinguishes development history from tagged releases. |
 | Private vulnerability reporting | Gap | `SECURITY.md` does not claim that a verified private reporting channel is enabled. |
 | Fully locked dependency reconstruction | Gap | The known-good file pins direct dependencies but does not yet provide a complete hashed transitive lock or offline reconstruction guarantee. |
 | Cryptographic release provenance | Gap | Candidate provenance is an inspectable JSON record, not a cryptographic attestation. No release signing, SBOM, or package-registry trusted-publishing path is yet approved. |
+| Byte-reproducible source distribution | Gap if required | The current sdist is checksum-identified but not byte-reproducible across repeated same-environment builds. This is not currently promoted as a release guarantee. |
 | Tagged releases | Gap | No public GitHub release or package release has been published as of this audit baseline. |
 | Independent security assessment | Gap | The controls have not been independently security-audited. |
 | Production deployment evidence | Gap | No deployment-specific production evidence is claimed. |
 
 ## Release-candidate process
 
-See `docs/release-candidate.md` for the candidate build contract, supported Python lines, dependency lanes, deterministic build inputs, checksum/provenance outputs, and the separation between candidate construction and publication.
+See `docs/release-candidate.md` for the candidate build contract, supported Python lines, dependency lanes, wheel reproducibility gate, source-distribution integrity boundary, checksum/provenance outputs, and the separation between candidate construction and publication.
 
 The manual candidate workflow is preparation only. It does not authorize or perform a public release.
 
@@ -106,10 +108,11 @@ Before the first public package release:
 
 1. enable and verify an actionable private vulnerability-reporting path;
 2. decide whether the first release requires a fully hashed transitive lock or whether the known-good direct baseline is sufficient;
-3. define the approved cryptographic provenance/signing/SBOM policy for released artifacts;
-4. produce a release candidate from the exact intended release commit;
-5. verify its checksums, provenance record, changelog, compatibility evidence, and known limitations;
-6. bind explicit maintainer approval to the exact commit, version, artifact hashes, and publication target;
-7. publish only after that approval.
+3. decide whether byte-reproducible source distributions are required for the first release or whether checksum identity is sufficient;
+4. define the approved cryptographic provenance/signing/SBOM policy for released artifacts;
+5. produce a release candidate from the exact intended release commit;
+6. verify its checksums, provenance record, changelog, compatibility evidence, and known limitations;
+7. bind explicit maintainer approval to the exact commit, version, artifact hashes, and publication target;
+8. publish only after that approval.
 
 Do not collapse these gates into a claim that the framework is generally secure or production-ready.
