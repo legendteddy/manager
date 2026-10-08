@@ -151,7 +151,7 @@ class MCPTransportConformanceTests(unittest.TestCase):
 
         self.assertEqual("failed", result["status"])
         self.assertEqual("tool_execution_failed", result["decision_reason"])
-        self.assertIn("schema changed", result["error"])
+        self.assertEqual("MCPBoundaryError", result["error"])
         self.assertEqual([], self.read_log())
 
     def test_disappearance_blocks_then_reconnect_succeeds_without_reregister(self) -> None:
@@ -167,7 +167,8 @@ class MCPTransportConformanceTests(unittest.TestCase):
             {"scope_authorized": True},
         )
         self.assertEqual("failed", blocked["status"])
-        self.assertIn("disappeared", blocked["error"])
+        self.assertEqual("tool_execution_failed", blocked["decision_reason"])
+        self.assertEqual("MCPBoundaryError", blocked["error"])
         self.assertEqual([], self.read_log())
 
         self.write_state()
