@@ -92,6 +92,7 @@ jobs:
           python3 -m pip install --disable-pip-version-check --quiet --upgrade \
             'pip==26.2.1' \
             'setuptools==84.0.0' \
+            'packaging==26.3' \
             'build==1.6.1' \
             'jsonschema==4.26.0' \
             'openai==3.26.0' \
