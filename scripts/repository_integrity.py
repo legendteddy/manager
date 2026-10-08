@@ -182,8 +182,9 @@ def validate_supply_chain_workflow(path: Path, failures: list[str]) -> None:
     label = path.relative_to(ROOT).as_posix() if path.is_relative_to(ROOT) else path.name
     for index, line in enumerate(lines):
         stripped = line.strip()
-        if stripped.startswith("uses: "):
-            action = stripped.removeprefix("uses: ").split(" #", 1)[0].strip()
+        step_text = stripped.removeprefix("- ").lstrip()
+        if step_text.startswith("uses: "):
+            action = step_text.removeprefix("uses: ").split(" #", 1)[0].strip()
             if not ACTION_SHA_RE.fullmatch(action):
                 failures.append(
                     f"supply-chain workflow action must be pinned to a 40-hex commit: {label}:{index + 1}"
