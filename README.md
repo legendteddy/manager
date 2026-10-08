@@ -8,12 +8,14 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Early reference-runtime stage.** The repository defines architecture, governance, security, machine-readable contracts, synthetic eval fixtures, and a small Python reference control plane. The reference runtime demonstrates selected deterministic routing, approval, handoff, reconciliation, and public-safety behaviors. It does not yet claim a production runtime, general-purpose task execution, behavioral parity with the private reference, or production readiness.
+**Model-backed reference-runtime stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, and a provider-neutral model adapter boundary with an OpenAI Responses API reference adapter.
+
+The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary tool execution, durable approval/state storage, provider failover, or general-purpose autonomous agent execution.
 
 ## Core principles
 
 - **Minimum necessary agentic complexity.** Simple tasks stay direct.
-- **Capabilities before agents.** A specialization may be performed by the primary agent, deterministic code, a tool, an external service, or a specialist agent.
+- **Capabilities before agents.** A specialization may be performed by the primary model, deterministic code, a tool, an external service, or a specialist agent.
 - **Bounded delegation.** Delegation transfers scoped work, not unlimited authority.
 - **Explicit accountability.** Every substantive decision or sub-decision has one accountable owner.
 - **Consequential approval.** Material, destructive, sensitive, or otherwise consequential actions cross a human approval gate.
@@ -68,6 +70,28 @@ tracing + evals
 
 Internal components use conventional technical terms such as `orchestrator`, `router`, `capability`, `specialist agent`, `policy`, `approval`, `state`, `evaluator`, `reconciliation`, `tracing`, `eval`, and `adapter`.
 
+## Provider boundary
+
+Manager's deterministic governance remains outside model providers.
+
+```text
+Manager control plane
+      ↓
+provider-neutral model request
+      ↓
+model adapter
+      ↓
+provider SDK / API
+      ↓
+normalized model response
+      ↓
+Manager result + trace
+```
+
+A model response supplies content inside an already-authorized workflow. It cannot approve a material action, widen tool permissions, redefine state ownership, or bypass reconciliation.
+
+The first reference provider adapter targets OpenAI's Responses API. It is optional. Canonical Manager contracts remain provider-neutral and do not hard-code a default model.
+
 ## Reference runtime
 
 The first reference runtime is implemented in Python under [`runtime/python/`](runtime/python/). Python is an implementation choice for the reference runtime, not a canonical requirement for Manager.
@@ -78,7 +102,7 @@ From the repository root:
 PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
 ```
 
-The current runtime is a deterministic control plane. It does not call model providers or execute arbitrary external side effects.
+The deterministic eval suite does not require provider credentials or network access. Model-backed execution is optional and uses an explicit provider adapter.
 
 ## Manager, MCP, and product integrations
 
@@ -97,7 +121,8 @@ Provider- or product-specific behavior belongs behind adapters rather than insid
 - [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, and public safety
 - [`AGENTS.md`](AGENTS.md): instructions for AI systems working in this repository
 - [`contracts/`](contracts/): provider-neutral machine-readable contracts
-- [`runtime/python/`](runtime/python/): first reference control-plane runtime
+- [`runtime/python/`](runtime/python/): Python reference control plane and provider adapters
+- [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
 - [`docs/handoffs.md`](docs/handoffs.md): bounded delegation contract
 - [`docs/reconciliation.md`](docs/reconciliation.md): authoritative-state reconciliation
 - [`docs/evidence.md`](docs/evidence.md): evidence and claim discipline
@@ -113,4 +138,6 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has a language-neutral architectural foundation, public machine-readable contracts, synthetic deterministic eval fixtures, and a small Python reference control plane. It does not yet have provider adapters, general-purpose orchestration, durable approval/state infrastructure, or production side effects. Claims such as "validated", "secure", "behaviorally equivalent", or "production-ready" require evidence for that exact claim.
+Manager has an executable deterministic reference control plane and a first model-provider adapter boundary. Current CI verifies public-repository integrity, Python compilation, unit tests, and deterministic behavioral evals without requiring provider credentials.
+
+Claims such as "secure", "behaviorally equivalent", "production-ready", or "safe for autonomous external side effects" require additional evidence for that exact claim.
