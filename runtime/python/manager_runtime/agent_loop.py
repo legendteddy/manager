@@ -63,7 +63,10 @@ def _serialize_tool_output(result: dict[str, Any], max_chars: int) -> tuple[str,
         text = str(result.get("output"))
     if len(text) > max_chars:
         marker = "...[truncated by Manager]"
-        text = text[: max(0, max_chars - len(marker))] + marker
+        if max_chars <= len(marker):
+            text = marker[:max_chars]
+        else:
+            text = text[: max_chars - len(marker)] + marker
     return text, False
 
 
