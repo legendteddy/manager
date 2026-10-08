@@ -7,9 +7,16 @@ name = "manager-reference-runtime"
 version = "0.10.0"
 description = "Python reference control-plane, governed tool, durable approval, resumable bounded agent-loop, conformance, and governed MCP runtime for Manager"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.15"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
 
 [project.optional-dependencies]
 openai = ["openai>=3.20,<4"]

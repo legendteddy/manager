@@ -8,11 +8,11 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Release-readiness audit stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, resumable loop checkpoints, full contract-conformance testing, legal durable-state transition validation, explicit evidence-based recovery resolution, a Manager-owned MCP adapter boundary, end-to-end stdio plus Streamable HTTP protocol tests through the official MCP Python SDK, an explicit threat model, a pre-stable API/versioning policy, and package build/install smoke testing.
+**First-release engineering stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, resumable loop checkpoints, full contract-conformance testing, legal durable-state transition validation, explicit evidence-based recovery resolution, a Manager-owned MCP adapter boundary, end-to-end stdio plus Streamable HTTP protocol tests through the official MCP Python SDK, an explicit threat model, a pre-stable API/versioning policy, supported-Python matrix testing, a known-good direct dependency baseline, and release-candidate construction with a byte-reproducible wheel, checksummed source distribution, and inspectable provenance record.
 
 The current classification is **experimental reference implementation**. The project has not published a tagged public software release. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, automatic trust of MCP servers, provider-managed MCP execution, production OAuth/credential handling, TLS/mTLS or enterprise proxy policy, request-scoped SSE response-stream conformance, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
 
-See [`docs/release-readiness.md`](docs/release-readiness.md) for the release gates and remaining gaps, and [`docs/threat-model.md`](docs/threat-model.md) for current security assumptions and residual risks.
+See [`docs/release-readiness.md`](docs/release-readiness.md) for the release gates and remaining gaps, [`docs/release-candidate.md`](docs/release-candidate.md) for candidate construction and verification, and [`docs/threat-model.md`](docs/threat-model.md) for current security assumptions and residual risks.
 
 ## Core principles
 
@@ -137,6 +137,8 @@ The first durable state adapter uses SQLite through Python's standard library. I
 
 The first reference runtime is implemented in Python under [`runtime/python/`](runtime/python/). Python is an implementation choice for the reference runtime, not a canonical requirement for Manager.
 
+The current package advertises and tests Python 3.11, 3.12, 3.13, and 3.14. Its package metadata is intentionally bounded to `>=3.11,<3.15` until a future Python line is explicitly tested and approved.
+
 From the repository root:
 
 ```bash
@@ -155,7 +157,15 @@ PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -
 PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_streamable_http_conformance.py' -v
 ```
 
-The deterministic eval and base unit-test suite does not require provider credentials, live external MCP services, live production tools, network model calls, or production state stores. Dedicated MCP transport suites use only synthetic local stdio and loopback HTTP servers. Schema conformance uses `jsonschema` as a test-only dependency. CI also builds the Python wheel, installs it into an isolated target directory, and verifies that the package imports.
+Local release-candidate construction uses the exact direct baseline in [`runtime/python/constraints/known-good.txt`](runtime/python/constraints/known-good.txt):
+
+```bash
+python3 scripts/build_release_candidate.py --output release-candidate
+```
+
+The builder writes wheel and sdist artifacts, `SHA256SUMS`, and `provenance.json`. Required CI builds the candidate twice from the same commit and requires the wheel hash to be identical. The source distribution is checksummed for exact identity but is not currently claimed byte-reproducible. The manual `Build release candidate` workflow can preserve the candidate as a short-lived GitHub Actions artifact, but it does not publish a package, tag, release, cryptographic attestation, or SBOM.
+
+The deterministic eval and base unit-test suite does not require provider credentials, live external MCP services, live production tools, network model calls, or production state stores. Dedicated MCP transport suites use only synthetic local stdio and loopback HTTP servers. Schema conformance uses `jsonschema` as a test-only dependency.
 
 ## Manager, MCP, and product integrations
 
@@ -177,6 +187,7 @@ Manager-owned MCP adapters keep discovery and execution behind the same trusted 
 - [`contracts/`](contracts/): provider-neutral machine-readable contracts
 - [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, MCP adapter boundary, durable run store, bounded agent loop, durable loop-resume state machine, and recovery controls
 - [`docs/release-readiness.md`](docs/release-readiness.md): release classifications, versioning policy, audit matrix, and first-release gates
+- [`docs/release-candidate.md`](docs/release-candidate.md): supported Python lines, dependency lanes, wheel reproducibility, sdist integrity, candidate checksums/provenance, and publication boundary
 - [`docs/threat-model.md`](docs/threat-model.md): trust boundaries, threats, mitigations, residual risks, and security-review triggers
 - [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
 - [`docs/tool-runtime.md`](docs/tool-runtime.md): tool proposal, policy, approval, execution, and verification boundary
@@ -201,8 +212,8 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, a tested durable loop-resume path, full Draft 2020-12 conformance checks for representative emitted artifacts, legal state-transition enforcement, corrupted-state rejection, an explicit recovery protocol for uncertain external outcomes, a tested Manager-owned MCP tool-binding boundary, end-to-end official-SDK stdio plus Streamable HTTP transport suites using only synthetic local servers, a documented threat model, modern package metadata, and a wheel build/import gate. Current CI verifies public-repository integrity, Python compilation, unit tests, deterministic behavioral evals, schema conformance, package construction, MCP stdio behavior, and Streamable HTTP behavior without provider credentials or live external side effects.
+Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, a tested durable loop-resume path, full Draft 2020-12 conformance checks for representative emitted artifacts, legal state-transition enforcement, corrupted-state rejection, an explicit recovery protocol for uncertain external outcomes, a tested Manager-owned MCP tool-binding boundary, end-to-end official-SDK stdio plus Streamable HTTP transport suites using only synthetic local servers, a documented threat model, modern package metadata, tested Python 3.11–3.14 compatibility, a known-good direct release baseline, and release-candidate tooling that proves same-environment wheel reproducibility while recording exact checksums for both wheel and source distribution.
 
-The repository remains **experimental**. Supported-Python matrix coverage, reproducible dependency baselines, a private vulnerability-reporting path, release automation/provenance, tagged artifacts, independent security assessment, and deployment-specific production evidence remain open release-engineering gaps.
+The repository remains **experimental**. A verified private vulnerability-reporting channel, a decision on fully hashed transitive locking and sdist reproducibility requirements, approved cryptographic release provenance/signing/SBOM policy, a final exact release-candidate audit, tagged artifacts, independent security assessment, and deployment-specific production evidence remain open gates.
 
 Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", "distributed", "trusted MCP", "production HTTP-safe", or "safe for autonomous production side effects" require additional evidence for that exact claim.
