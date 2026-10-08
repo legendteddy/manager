@@ -29,6 +29,21 @@ _ACTIVE_METRIC = {
     "state": "manager_active_state_calls",
     "run": "manager_active_runs",
 }
+_OUTCOME_METRIC = {
+    "run_completed": "manager_completed_runs_total",
+    "run_failed": "manager_failed_runs_total",
+    "retry": "manager_retries_total",
+    "duplicate_suppressed": "manager_duplicate_suppression_total",
+    "policy_denial": "manager_policy_denials_total",
+    "timeout": "manager_timeouts_total",
+    "cancellation": "manager_cancellations_total",
+    "budget_exhausted": "manager_budget_exhaustion_total",
+    "state_error": "manager_state_errors_total",
+}
+_BACKLOG_METRIC = {
+    "approval_wait": "manager_approval_wait_count",
+    "recovery_required": "manager_recovery_required_count",
+}
 
 
 class OperationalRuntime:
@@ -52,6 +67,8 @@ class OperationalRuntime:
         labels: Mapping[str, Any] | None = None,
         attributes: Mapping[str, Any] | None = None,
     ) -> Iterator[None]:
+        if kind not in _EVENT_BY_KIND:
+            raise ValueError(f"unknown operation kind: {kind}")
         correlation = correlation or Correlation()
         labels = dict(labels or {})
         event_prefix = _EVENT_BY_KIND[kind]
@@ -88,10 +105,80 @@ class OperationalRuntime:
         finally:
             self.telemetry.metric(_ACTIVE_METRIC[kind], "gauge", self.capacity.gate(kind).active, labels=labels)
 
+    @contextmanager
+    def run_scope(
+        self, *, request_id: Any = None, run_id: Any = None
+    ) -> Iterator[Correlation]:
+        correlation = Correlation.from_values(request_id=request_id, run_id=run_id)
+        self.telemetry.event("run.submitted", correlation=correlation)
+        with self.operation("run", correlation=correlation):
+            yield correlation
+
+    def enqueue_run(self, item: Any, *, request_id: Any = None, run_id: Any = None) -> None:
+        correlation = Correlation.from_values(request_id=request_id, run_id=run_id)
+        try:
+            self.capacity.queue.put_nowait(item)
+        except OverloadedError:
+            self.telemetry.metric(
+                "manager_overload_rejections_total", "counter", 1,
+                labels={"component": "run_queue", "reason": "capacity_exhausted"},
+            )
+            self.telemetry.event("overload.rejected", correlation=correlation, attributes={"component": "run_queue"})
+            raise
+        self.telemetry.metric("manager_queue_depth", "gauge", self.capacity.queue.depth)
+        self.telemetry.event("run.queued", correlation=correlation)
+
+    def dequeue_run(self) -> Any:
+        item = self.capacity.queue.get_nowait()
+        self.telemetry.metric("manager_queue_depth", "gauge", self.capacity.queue.depth)
+        return item
+
+    def record_outcome(
+        self,
+        outcome: str,
+        *,
+        correlation: Correlation | None = None,
+        labels: Mapping[str, Any] | None = None,
+    ) -> None:
+        metric = _OUTCOME_METRIC.get(outcome)
+        if metric is None:
+            raise ValueError(f"unknown operational outcome: {outcome}")
+        self.telemetry.metric(metric, "counter", 1, labels=labels)
+        self.telemetry.event(
+            f"outcome.{outcome}", correlation=correlation or Correlation(),
+            attributes={"outcome": outcome},
+        )
+
+    def record_backlog(self, *, approval_wait: int, recovery_required: int) -> None:
+        values = {
+            "approval_wait": approval_wait,
+            "recovery_required": recovery_required,
+        }
+        for name, value in values.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} backlog must be a non-negative integer")
+            self.telemetry.metric(_BACKLOG_METRIC[name], "gauge", value)
+
     def health(self) -> dict[str, Any]:
         snapshot = self.capacity.snapshot()
+        limits = snapshot["limits"]
+        active = snapshot["active"]
+        saturation = {
+            "runs": active["runs"] / limits["active_runs"],
+            "models": active["models"] / limits["model_concurrency"],
+            "tools": active["tools"] / limits["tool_concurrency"],
+            "mcp": active["mcp"] / limits["mcp_concurrency"],
+            "state": active["state"] / limits["state_concurrency"],
+            "queue": snapshot["queue_depth"] / limits["queued_runs"],
+        }
+        snapshot["saturation"] = saturation
         snapshot["telemetry_sink_failures"] = self.telemetry.sink_failures
-        snapshot["status"] = "degraded" if self.telemetry.sink_failures else "ok"
+        if any(value >= 1.0 for value in saturation.values()):
+            snapshot["status"] = "saturated"
+        elif self.telemetry.sink_failures:
+            snapshot["status"] = "degraded"
+        else:
+            snapshot["status"] = "ok"
         return snapshot
 
     def observe_model_adapter(self, adapter: Any) -> "ObservedModelAdapter":
