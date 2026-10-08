@@ -14,7 +14,7 @@ ARG MANAGER_GID=10001
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOME=/nonexistent \
-    MANAGER_DEPLOY_DATA_DIR=/var/lib/manager \
+    MANAGER_DEPLOY_DATA_DIR=/var/lib/manager/state \
     MANAGER_DEPLOY_TMP_DIR=/var/run/manager \
     MANAGER_DEPLOY_SECRETS_DIR=/run/secrets
 RUN groupadd --gid "${MANAGER_GID}" manager \
@@ -25,5 +25,5 @@ RUN python -m pip install --no-cache-dir --disable-pip-version-check --no-deps /
     && rm -rf /tmp/wheels
 USER ${MANAGER_UID}:${MANAGER_GID}
 WORKDIR /var/lib/manager
-ENTRYPOINT ["manager-deployment"]
-CMD ["validate-config"]
+EXPOSE 8080
+ENTRYPOINT ["manager-service"]
