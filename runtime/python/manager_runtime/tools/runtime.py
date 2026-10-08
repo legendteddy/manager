@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from ..capacity import OverloadedError
+from ..observability import Correlation
+from ..operations import DEFAULT_OPERATIONS, OperationalRuntime
 from .base import (
     ToolPayload,
     ToolRegistry,
@@ -135,11 +138,15 @@ def execute_tool_request(
     request: ToolPayload,
     registry: ToolRegistry,
     authorization: ToolPayload | None = None,
+    *,
+    operations: OperationalRuntime | None = None,
 ) -> ToolPayload:
     """Evaluate and optionally execute one tool request.
 
     Authorization is trusted application context and must never be copied from
     model output. The model proposal supplies only tool identity and arguments.
+    Operational telemetry observes execution only; it never participates in
+    authorization or approval decisions.
     """
     validate_tool_request(request)
     if authorization is not None and not isinstance(authorization, dict):
@@ -274,8 +281,26 @@ def execute_tool_request(
                 approval=approval,
             )
 
+    operations = operations or DEFAULT_OPERATIONS
+    correlation = Correlation.from_values(
+        run_id=request["run_id"], tool_request_id=request["request_id"]
+    )
     try:
-        output = registered.adapter.execute(dict(request["arguments"]))
+        with operations.operation(
+            "tool",
+            correlation=correlation,
+            labels={"operation": "execute", "side_effect_class": side_effect_class},
+            attributes={"side_effect_class": side_effect_class},
+        ):
+            output = registered.adapter.execute(dict(request["arguments"]))
+    except OverloadedError:
+        return _result(
+            request,
+            side_effect_class,
+            status="blocked",
+            reason="overload_rejected",
+            verification_status="not_required",
+        )
     except Exception as exc:
         return _result(
             request,
