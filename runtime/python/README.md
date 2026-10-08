@@ -2,7 +2,7 @@
 
 This directory contains Manager's first reference runtime.
 
-The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, durable approval checkpoints, a bounded multi-step model/tool continuation loop, and a durable resumable loop state machine. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
+The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, durable approval checkpoints, a bounded multi-step model/tool continuation loop, a durable resumable loop state machine, persisted-state conformance checks, and explicit recovery resolution. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
 
 ## Scope
 
@@ -30,9 +30,15 @@ Implemented:
 - required verification for consequential tool classes;
 - SQLite durable run checkpoints using the Python standard library;
 - optimistic revision checks for state updates;
+- persisted-state shape validation and legal transition enforcement;
+- malformed/corrupted persisted-state rejection on load;
 - persisted approval interruptions that survive process restart;
 - current authorization, target, request, and tool-definition revalidation on resume;
 - `recovery_required` fail-closed handling after interrupted execution intent;
+- explicit `resolve_recovery_required(...)` handling from external evidence;
+- fresh approval identity after externally confirmed non-execution;
+- recovered durable-loop continuation after externally confirmed success without re-executing the tool;
+- explicit checkpoint-version migration boundary with fail-closed future-version handling;
 - bounded multi-step model/tool continuation through `run_bounded_agent_loop`;
 - finite model-step, tool-call, and tool-result-size budgets;
 - exact repeated-tool loop detection before re-execution;
@@ -44,6 +50,7 @@ Implemented:
 - provider and allowed-tool-definition revalidation before durable continuation;
 - mandatory durable approval checkpoints for every consequential tool class in durable mode;
 - process-restart continuation after an approved, verified side effect without replaying that side effect;
+- full Draft 2020-12 schema conformance testing for representative emitted runtime artifacts;
 - synthetic tool adapters and unit tests with no live side effects.
 
 Not implemented:
@@ -58,11 +65,10 @@ Not implemented:
 - sandbox/process isolation;
 - encrypted state-at-rest management;
 - distributed locks, leases, or high-availability state stores;
-- automatic reconciliation of uncertain `recovery_required` outcomes;
+- automatic reconciliation with arbitrary external systems;
 - multimodal model input;
 - streaming;
 - provider failover or automatic model selection;
-- full JSON Schema validation;
 - production readiness or private-reference parity.
 
 ## Run deterministic evals
@@ -78,6 +84,15 @@ Run unit tests:
 ```bash
 PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -v
 ```
+
+Run full contract conformance:
+
+```bash
+python3 -m pip install -e 'runtime/python[conformance]'
+PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
+```
+
+The conformance dependency is test-only. Normal reference-runtime execution remains zero-dependency unless an optional provider extra is installed.
 
 ## OpenAI reference adapter
 
@@ -111,7 +126,7 @@ Use `ToolRegistry` to register tool metadata and implementations. The model neve
 
 ## Bounded agent loop
 
-The Stage 7 loop is intentionally finite and conservative:
+The non-durable loop is intentionally finite and conservative:
 
 ```text
 model
@@ -152,7 +167,7 @@ See [`docs/run-state.md`](../../docs/run-state.md).
 
 ## Durable bounded agent loop
 
-Stage 8 connects the durable state layer to the bounded loop:
+The durable loop connects the durable state layer to the bounded loop:
 
 ```text
 run_durable_agent_loop(...)
@@ -177,10 +192,20 @@ A provider call can still be reissued if a process fails after the provider resp
 
 See [`docs/durable-agent-loop.md`](../../docs/durable-agent-loop.md).
 
+## Recovery resolution
+
+`resolve_recovery_required(...)` never executes an uncertain tool action merely because the run restarted.
+
+- `confirmed_succeeded` records external evidence and a recovered verified result. A durable loop returns to `continuation_ready` without re-executing the tool.
+- `confirmed_not_executed` creates a new request ID and approval ID and returns to `waiting_approval` after current authorization is re-established.
+- `cancelled` terminates without another execution.
+
+See [`docs/conformance-recovery.md`](../../docs/conformance-recovery.md).
+
 ## Governance boundary
 
 Model and tool proposals remain outside the authority boundary. Durable state does not make an old approval permanently valid, and a bounded loop does not make a previous approval reusable.
 
 The SQLite reference adapter is a durability proof, not an encryption layer or universal production datastore recommendation. Embedding applications remain responsible for access control, encryption, retention, backup, and regulatory requirements appropriate to their environment.
 
-A green test or eval run demonstrates only the behavior actually encoded and tested. It does not establish general reasoning quality, provider uptime, security completeness, distributed exactly-once execution, private-reference parity, deployment readiness, or production suitability.
+A green test, eval, or schema-conformance run demonstrates only the behavior and artifacts actually encoded and tested. It does not establish general reasoning quality, provider uptime, security completeness, distributed exactly-once execution, private-reference parity, deployment readiness, or production suitability.
