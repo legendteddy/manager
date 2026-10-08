@@ -16,9 +16,9 @@
       "const": "never",
       "description": "Approval from a prior action is not automatically carried into a new loop action."
     },
-    "partial_batch_execution": {
+    "partial_over_budget_batch_execution": {
       "const": false,
-      "description": "If a provider proposes more tool calls than the remaining budget, the reference runtime executes none of that batch."
+      "description": "If a provider proposes more tool calls than the remaining budget, the reference runtime executes none of that over-budget batch."
     },
     "extensions": {"type": "object", "additionalProperties": true}
   },
