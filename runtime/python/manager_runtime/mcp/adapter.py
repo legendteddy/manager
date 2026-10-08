@@ -9,7 +9,12 @@ from ..tools.base import (
     ToolRuntimeError,
     validate_tool_definition,
 )
-from .base import MCPBoundaryError, MCPClient, normalize_mcp_tool
+from .base import (
+    MCPBoundaryError,
+    MCPClient,
+    normalize_mcp_tool,
+    remote_schema_fingerprint,
+)
 
 Verifier = Callable[[dict[str, Any], Any], bool]
 
@@ -58,11 +63,22 @@ def _configured_definition(
     binding: dict[str, Any], remote_tool: dict[str, Any]
 ) -> dict[str, Any]:
     definition = deepcopy(binding["local_definition"])
+    binding_fingerprint = remote_schema_fingerprint(
+        {
+            "server_id": binding["server_id"],
+            "remote_tool_name": binding["remote_tool_name"],
+            "input_schema": remote_tool["input_schema"],
+        }
+    )
+    base_version = definition.get("version") or "unversioned"
+    definition["version"] = f"{base_version}|mcp:{binding_fingerprint}"
+
     extensions = deepcopy(definition.get("extensions") or {})
     extensions["mcp"] = {
         "server_id": binding["server_id"],
         "remote_tool_name": binding["remote_tool_name"],
         "remote_schema_fingerprint": remote_tool["schema_fingerprint"],
+        "binding_fingerprint": binding_fingerprint,
     }
     definition["extensions"] = extensions
     return definition
