@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from .engine import run as run_control_plane
-from .providers.base import ModelAdapter, ModelPayload, validate_model_response
+from .providers.base import (
+    ModelAdapter,
+    ModelPayload,
+    validate_model_request,
+    validate_model_response,
+)
 from .tools.base import CONSEQUENTIAL_CLASSES, ToolRegistry, tool_request_fingerprint
 from .tools.runtime import execute_tool_request
 
@@ -157,6 +162,7 @@ def run_with_model(
         request["tools"] = tool_definitions
 
     try:
+        validate_model_request(request)
         response = adapter.generate(request)
         validate_model_response(response, expected_provider=adapter.provider)
     except Exception as exc:
