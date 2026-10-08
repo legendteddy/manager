@@ -6,7 +6,10 @@
   "required": ["result_id", "status", "finding", "owner_decision_required"],
   "properties": {
     "result_id": {"type": "string", "minLength": 1},
-    "status": {"enum": ["complete", "partial", "blocked", "failed", "unverified"]},
+    "status": {
+      "enum": ["complete", "completed", "partial", "blocked", "failed", "unverified"],
+      "description": "`completed` is the preferred completion spelling for new loop/runtime paths. `complete` remains accepted for backward compatibility with earlier deterministic outputs."
+    },
     "finding": {"type": "string"},
     "recommendation": {"type": "string"},
     "material_evidence": {"type": "array", "items": {"type": "object", "additionalProperties": true}},

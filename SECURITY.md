@@ -83,7 +83,7 @@ Loop termination does not prove the external objective succeeded. Budget exhaust
 
 Durability does not weaken approval freshness and does not create new authority.
 
-The Stage 8 durable loop persists consumed budgets, exact seen-action fingerprints, provider/model identity, allowed tool names, trusted tool-definition fingerprints, normalized model responses, and sanitized continuation results between durable phases.
+The durable loop persists consumed budgets, exact seen-action fingerprints, provider/model identity, allowed tool names, trusted tool-definition fingerprints, normalized model responses, and sanitized continuation results between durable phases.
 
 Restart does not reset budgets, clear loop-detection history, widen the allowed tool set, or carry an old approval into a new action.
 
@@ -96,6 +96,34 @@ Before a resumed consequential side effect executes, Manager persists `status = 
 A durable checkpoint does not establish exactly-once provider calls or exactly-once external effects. A process failure between receiving a provider response and persisting the next local checkpoint may require the provider request to be issued again.
 
 See [`docs/durable-agent-loop.md`](docs/durable-agent-loop.md).
+
+## Persisted-state conformance
+
+Persisted state is treated as untrusted runtime input when it is loaded back from storage.
+
+The SQLite reference store validates required fields and normalized statuses on create, load, and compare-and-swap. It rejects malformed JSON, malformed state shapes, revision inconsistencies, and illegal state transitions before execution logic can consume them.
+
+Terminal states cannot be silently resurrected into execution. A persisted `waiting_approval` or `executing` state must retain its pending action, and `recovery_required` must retain a non-empty recovery reason.
+
+Durable agent-loop checkpoints are explicitly versioned. Unknown future versions fail closed. Future breaking checkpoint revisions require a reviewed migration function rather than best-effort interpretation.
+
+## Recovery resolution
+
+`recovery_required` represents an uncertain real-world outcome and must not be resolved by automatic retry or model speculation.
+
+Resolution requires explicit external evidence and one of three decisions:
+
+- `confirmed_succeeded`: record a recovered verified result without executing the tool again; a durable loop may then return to `continuation_ready`;
+- `confirmed_not_executed`: create a fresh request and approval identity after current scope/target authorization is re-established;
+- `cancelled`: terminate without another tool execution.
+
+The old approval is never revived after a recovery decision. See [`docs/conformance-recovery.md`](docs/conformance-recovery.md).
+
+## Contract conformance
+
+CI uses a full JSON Schema Draft 2020-12 validator as a test-only dependency. It validates all public schemas, eval fixtures, and representative artifacts emitted by deterministic, model-backed, tool, bounded-loop, and durable-loop paths.
+
+Schema conformance is evidence that the tested artifact matches the declared public contract. It is not a general security proof.
 
 ## Secrets
 
@@ -126,4 +154,4 @@ A dedicated private vulnerability-reporting channel has not yet been established
 
 ## Security maturity
 
-Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, recovery-required handling after interrupted execution intent, finite multi-step budgets, repeated-action loop detection, sensitive-result withholding, and durable bounded-loop resumption across approval interruption. These controls are tested in CI but have not been independently security-audited and do not establish production readiness, production sandboxing, credential safety, encrypted state handling, distributed coordination, exactly-once side effects, or safe autonomous production side effects.
+Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, legal state-transition validation, corrupted-state fail-closed handling, recovery-required resolution from explicit evidence, checkpoint-version rejection/migration boundaries, finite multi-step budgets, repeated-action loop detection, sensitive-result withholding, durable bounded-loop resumption across approval interruption, and full contract conformance testing in CI. These controls have not been independently security-audited and do not establish production readiness, production sandboxing, credential safety, encrypted state handling, distributed coordination, exactly-once side effects, or safe autonomous production side effects.

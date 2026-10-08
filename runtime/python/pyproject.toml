@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "manager-reference-runtime"
-version = "0.6.0"
-description = "Python reference control-plane, governed tool, durable approval, and resumable bounded agent-loop runtime for Manager"
+version = "0.7.0"
+description = "Python reference control-plane, governed tool, durable approval, resumable bounded agent-loop, and conformance runtime for Manager"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 
 [project.optional-dependencies]
 openai = ["openai>=3.20,<4"]
+conformance = ["jsonschema>=4.23,<5"]
 
 [tool.setuptools.packages.find]
 where = ["."]

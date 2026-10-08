@@ -11,6 +11,7 @@ These schemas encode governance and integration boundaries that are documented e
 - `approval.schema.json` binds human approval to an exact reviewed action and supports stale-approval detection.
 - `approval-decision.schema.json` records an explicit human approval or rejection decision.
 - `run-state.schema.json` describes durable execution checkpoints, including approval waits, blocked runs, and recovery-required states.
+- `recovery-resolution.schema.json` records explicit evidence-based resolution of an uncertain external outcome.
 - `result.schema.json` standardizes returned findings without transferring decision authority.
 - `reconciliation.schema.json` records authoritative-state updates and dependent propagation.
 - `trace.schema.json` records observable execution evidence without hidden chain-of-thought.
@@ -43,7 +44,9 @@ These schemas encode governance and integration boundaries that are documented e
 15. Durable loop resumption must preserve consumed budgets and exact seen-action fingerprints; restart is not a fresh execution budget.
 16. Durable mode must revalidate provider identity, allowed tool definitions, the pending request fingerprint, and current authorization before continuing an approved action.
 17. Consequential actions in the durable reference path must checkpoint approval before execution so crash recovery cannot blindly replay a side effect.
-18. Provider-executed tools must not bypass Manager's local policy boundary.
-19. Breaking contract changes are material architecture changes and require review against `GOVERNANCE.md` and `docs/protected-surfaces.md`.
+18. `recovery_required` may be resolved only from explicit external evidence. Confirmed non-execution creates a fresh approval identity rather than reviving the old approval.
+19. Persisted state must fail closed on corruption, impossible transitions, or unsupported checkpoint versions.
+20. Provider-executed tools must not bypass Manager's local policy boundary.
+21. Breaking contract changes are material architecture changes and require review against `GOVERNANCE.md` and `docs/protected-surfaces.md`.
 
-Schemas use JSON Schema Draft 2020-12. Repository integrity checks verify that contract files are syntactically valid JSON and expose the required schema metadata. The Python reference runtime additionally performs narrow runtime validation for the model, tool, approval, loop, and state fields it consumes. Full cross-contract JSON Schema validation remains future work.
+Schemas use JSON Schema Draft 2020-12. CI runs a full Draft 2020-12 validator across every contract, all public eval fixtures, and representative artifacts emitted by the executable reference runtime. Narrow zero-dependency runtime validation still protects hot execution boundaries, while cross-contract conformance is enforced as a dedicated test layer.

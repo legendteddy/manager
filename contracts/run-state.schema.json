@@ -29,6 +29,7 @@
     "trace_snapshot": {"type": ["object", "null"], "additionalProperties": true},
     "result_snapshot": {"type": ["object", "null"], "additionalProperties": true},
     "recovery_reason": {"type": ["string", "null"]},
+    "recovery_resolution": {"anyOf": [{"$ref": "recovery-resolution.schema.json"}, {"type": "null"}]},
     "extensions": {"type": "object", "additionalProperties": true}
   },
   "additionalProperties": false
