@@ -20,7 +20,7 @@ class MCPNetworkSecurityTests(unittest.TestCase):
         with self.assertRaisesRegex(MCPBoundaryError, "network_url_credentials_rejected"):
             OfficialMCPClient(
                 "synthetic-server",
-                "https://user:secret@mcp.example.test",
+                "https://synthetic:fixture@localhost",
                 network_policy=NetworkSecurityPolicy(production=True),
             )
 
