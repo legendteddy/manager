@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/mcp-tool-binding.schema.json",
+  "title": "Manager MCP Tool Binding",
+  "type": "object",
+  "required": ["server_id", "remote_tool_name", "local_definition"],
+  "properties": {
+    "server_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "description": "Application-owned logical identity for the configured MCP server. This is not a URL or credential."
+    },
+    "remote_tool_name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact MCP tool name expected from discovery."
+    },
+    "local_definition": {
+      "$ref": "tool-definition.schema.json",
+      "description": "Trusted Manager-owned tool definition. Remote descriptions, annotations, and safety hints do not replace these fields."
+    },
+    "enabled": {"type": "boolean", "default": true},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
