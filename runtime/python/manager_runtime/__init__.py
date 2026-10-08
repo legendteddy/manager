@@ -5,5 +5,6 @@ It is not the canonical architecture definition and does not imply production re
 """
 
 from .engine import run
+from .orchestrator import run_with_model
 
-__all__ = ["run"]
+__all__ = ["run", "run_with_model"]

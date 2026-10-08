@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/model-request.schema.json",
+  "title": "Manager Model Request",
+  "type": "object",
+  "required": ["request_id", "model", "input"],
+  "properties": {
+    "request_id": {"type": "string", "minLength": 1},
+    "model": {"type": "string", "minLength": 1},
+    "instructions": {"type": "string"},
+    "input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Text input for the v1 provider-neutral reference contract."
+    },
+    "max_output_tokens": {"type": "integer", "minimum": 1},
+    "metadata": {"type": "object", "additionalProperties": true},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
