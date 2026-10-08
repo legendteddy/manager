@@ -32,6 +32,7 @@ def checkpoint_pending_tool_approval(
     authorization_context: dict[str, Any] | None = None,
     trace_snapshot: dict[str, Any] | None = None,
     result_snapshot: dict[str, Any] | None = None,
+    extensions: dict[str, Any] | None = None,
 ) -> RunState:
     """Persist an approval interruption before the run leaves the current process."""
     if tool_result.get("status") != "approval_required":
@@ -65,6 +66,7 @@ def checkpoint_pending_tool_approval(
         "trace_snapshot": deepcopy(trace_snapshot),
         "result_snapshot": deepcopy(result_snapshot),
         "recovery_reason": None,
+        "extensions": deepcopy(extensions or {}),
     }
     return store.create(state)
 
@@ -92,13 +94,21 @@ def resume_tool_approval(
     *,
     current_authorization: dict[str, Any],
     current_request: dict[str, Any] | None = None,
+    success_status: str = "completed",
 ) -> RunState:
     """Resolve a persisted approval and resume exactly one tool action.
 
     The function deliberately does not auto-retry a run found in `executing`.
     Such a state may mean the external side effect happened before the process
     crashed, so the run is moved to `recovery_required` instead.
+
+    `success_status` defaults to `completed`. Durable multi-step workflows may
+    use `running` so an approved action can return to a larger bounded workflow
+    without changing single-action Stage 6 semantics.
     """
+    if success_status not in {"completed", "running"}:
+        raise RunStateError("success_status must be completed or running")
+
     state = store.load(run_id)
     if state is None:
         raise RunStateError(f"unknown run: {run_id}")
@@ -199,7 +209,7 @@ def resume_tool_approval(
     final_state["revision"] = executing["revision"] + 1
     final_state["updated_at"] = _now()
     if result["status"] == "executed":
-        final_state["status"] = "completed"
+        final_state["status"] = success_status
         final_state["pending_action"] = None
     elif result["status"] == "approval_required":
         final_state["status"] = "waiting_approval"
