@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/eval-case.schema.json",
+  "title": "Manager Eval Case",
+  "type": "object",
+  "required": ["schema_version", "case_id", "title", "category", "input", "expected", "deterministic_assertions"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "case_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "title": {"type": "string", "minLength": 1},
+    "category": {
+      "enum": ["routing", "approval", "security", "reconciliation", "governance", "delegation", "evidence", "evolution", "recovery"]
+    },
+    "input": {
+      "type": "object",
+      "required": ["task"],
+      "properties": {
+        "task": {"type": "object"},
+        "trusted_policy_context": {"type": "array", "items": {"type": "string"}},
+        "untrusted_content": {"type": "array", "items": {"type": "string"}},
+        "prior_state": {"type": "object", "additionalProperties": true}
+      },
+      "additionalProperties": false
+    },
+    "expected": {
+      "type": "object",
+      "required": ["required_behaviors", "forbidden_behaviors"],
+      "properties": {
+        "required_behaviors": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "forbidden_behaviors": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+        "approval_required": {"type": "boolean"},
+        "human_escalation_required": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "deterministic_assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["subject", "path", "operator"],
+        "properties": {
+          "subject": {"enum": ["trace", "result", "approval", "reconciliation"]},
+          "path": {"type": "string", "minLength": 1},
+          "operator": {"enum": ["equals", "not_equals", "contains", "not_contains", "exists", "absent"]},
+          "value": {}
+        },
+        "additionalProperties": false
+      }
+    },
+    "rubric_criteria": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "string"}
+  },
+  "additionalProperties": false
+}

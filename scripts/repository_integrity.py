@@ -2,7 +2,8 @@
 """Public-repository integrity checks.
 
 This script is repository tooling only; it does not select Manager's runtime language.
-It intentionally uses high-confidence checks and does not claim to detect every secret or privacy leak.
+It intentionally uses high-confidence checks and does not claim to detect every secret,
+privacy leak, or semantic schema violation.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
 CONTRACTS_DIR = ROOT / "contracts"
+EVAL_CASES_DIR = ROOT / "evals" / "cases"
 
 RISKY_FILENAMES = {
     ".env",
@@ -43,6 +45,20 @@ SAFE_EMAIL_SUFFIXES = (
     "@example.net",
 )
 SAFE_EMAIL_EXACT = {"noreply@github.com"}
+
+EVAL_CATEGORIES = {
+    "routing",
+    "approval",
+    "security",
+    "reconciliation",
+    "governance",
+    "delegation",
+    "evidence",
+    "evolution",
+    "recovery",
+}
+EVAL_SUBJECTS = {"trace", "result", "approval", "reconciliation"}
+EVAL_OPERATORS = {"equals", "not_equals", "contains", "not_contains", "exists", "absent"}
 
 TEXT_LIMIT = 1_000_000
 
@@ -79,6 +95,72 @@ def validate_contracts(failures: list[str]) -> None:
             failures.append(f"contract root type must be object: {relative}")
 
 
+def validate_eval_cases(failures: list[str]) -> None:
+    if not EVAL_CASES_DIR.exists():
+        return
+
+    required_fields = {
+        "schema_version",
+        "case_id",
+        "title",
+        "category",
+        "input",
+        "expected",
+        "deterministic_assertions",
+    }
+
+    for path in sorted(EVAL_CASES_DIR.glob("*.json")):
+        relative = path.relative_to(ROOT).as_posix()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            failures.append(f"invalid eval JSON {relative}: {exc}")
+            continue
+
+        missing = sorted(required_fields - set(data))
+        if missing:
+            failures.append(f"eval case missing required fields {missing}: {relative}")
+            continue
+
+        if data.get("schema_version") != "1.0":
+            failures.append(f"eval case must use schema_version 1.0: {relative}")
+        if data.get("case_id") != path.stem:
+            failures.append(f"eval case_id must match filename: {relative}")
+        if data.get("category") not in EVAL_CATEGORIES:
+            failures.append(f"eval case has unsupported category: {relative}")
+
+        input_data = data.get("input")
+        if not isinstance(input_data, dict) or not isinstance(input_data.get("task"), dict):
+            failures.append(f"eval case input.task must be an object: {relative}")
+
+        expected = data.get("expected")
+        if not isinstance(expected, dict):
+            failures.append(f"eval case expected must be an object: {relative}")
+        else:
+            for field in ("required_behaviors", "forbidden_behaviors"):
+                value = expected.get(field)
+                if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+                    failures.append(f"eval case expected.{field} must be a string array: {relative}")
+
+        assertions = data.get("deterministic_assertions")
+        if not isinstance(assertions, list):
+            failures.append(f"eval case deterministic_assertions must be an array: {relative}")
+            continue
+
+        for index, assertion in enumerate(assertions):
+            if not isinstance(assertion, dict):
+                failures.append(f"eval assertion {index} must be an object: {relative}")
+                continue
+            if assertion.get("subject") not in EVAL_SUBJECTS:
+                failures.append(f"eval assertion {index} has unsupported subject: {relative}")
+            if not isinstance(assertion.get("path"), str) or not assertion["path"]:
+                failures.append(f"eval assertion {index} requires a non-empty path: {relative}")
+            if assertion.get("operator") not in EVAL_OPERATORS:
+                failures.append(f"eval assertion {index} has unsupported operator: {relative}")
+            if assertion.get("operator") not in {"exists", "absent"} and "value" not in assertion:
+                failures.append(f"eval assertion {index} requires value for its operator: {relative}")
+
+
 def main() -> int:
     failures: list[str] = []
     warnings: list[str] = []
@@ -108,6 +190,7 @@ def main() -> int:
                 break
 
     validate_contracts(failures)
+    validate_eval_cases(failures)
 
     try:
         log_emails = subprocess.check_output(
