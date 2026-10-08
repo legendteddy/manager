@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/task.schema.json",
+  "title": "Manager Task",
+  "type": "object",
+  "required": ["task_id", "objective", "classification"],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "objective": {"type": "string", "minLength": 1},
+    "decision_context": {"type": "string"},
+    "inputs": {"type": "object", "additionalProperties": true},
+    "classification": {
+      "type": "object",
+      "required": ["materiality", "consequence", "uncertainty"],
+      "properties": {
+        "materiality": {"enum": ["routine", "material"]},
+        "consequence": {"enum": ["low", "medium", "high", "critical"]},
+        "uncertainty": {"enum": ["low", "medium", "high"]},
+        "reversibility": {"enum": ["reversible", "partially_reversible", "irreversible", "unknown"]},
+        "sensitivity": {"enum": ["public", "internal", "sensitive", "unknown"]}
+      },
+      "additionalProperties": false
+    },
+    "requested_capabilities": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "authority": {"type": "object", "additionalProperties": true},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

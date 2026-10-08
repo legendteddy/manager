@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/approval.schema.json",
+  "title": "Manager Approval",
+  "type": "object",
+  "required": ["approval_id", "run_id", "status", "action", "target", "materiality", "reason", "issued_at"],
+  "properties": {
+    "approval_id": {"type": "string", "minLength": 1},
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["pending", "approved", "rejected", "expired", "stale"]},
+    "action": {"type": "string", "minLength": 1},
+    "target": {"type": "string", "minLength": 1},
+    "material_parameters": {"type": "object", "additionalProperties": true},
+    "materiality": {"enum": ["routine", "material"]},
+    "risk_class": {"type": "string"},
+    "reason": {"type": "string", "minLength": 1},
+    "recommendation": {"type": "string"},
+    "recovery": {"type": "string"},
+    "issued_at": {"type": "string", "format": "date-time"},
+    "resolved_at": {"type": ["string", "null"], "format": "date-time"},
+    "approved_by": {"type": ["string", "null"]},
+    "action_fingerprint": {"type": "string", "description": "Stable digest or equivalent identity for the reviewed target plus material parameters."},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

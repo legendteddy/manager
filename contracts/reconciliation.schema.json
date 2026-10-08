@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/reconciliation.schema.json",
+  "title": "Manager Reconciliation",
+  "type": "object",
+  "required": ["reconciliation_id", "classification", "authoritative_owner", "detected_state", "actions", "verification"],
+  "properties": {
+    "reconciliation_id": {"type": "string", "minLength": 1},
+    "classification": {"enum": ["routine", "material"]},
+    "authoritative_owner": {"type": "string", "minLength": 1},
+    "detected_state": {"type": "string", "minLength": 1},
+    "dependencies": {"type": "array", "items": {"type": "string"}},
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["target", "action_type", "status"],
+        "properties": {
+          "target": {"type": "string", "minLength": 1},
+          "action_type": {"enum": ["update_authority", "propagate", "verify", "recommend_only"]},
+          "status": {"enum": ["planned", "completed", "blocked", "skipped", "failed"]},
+          "evidence": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["pass", "pass_with_conditions", "fail", "unverified"]},
+        "details": {"type": "string"},
+        "residual_discrepancies": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

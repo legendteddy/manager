@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/handoff.schema.json",
+  "title": "Manager Handoff",
+  "type": "object",
+  "required": ["handoff_id", "objective", "decision_owner", "scope", "authority", "output_contract", "completion_condition", "return_to"],
+  "properties": {
+    "handoff_id": {"type": "string", "minLength": 1},
+    "objective": {"type": "string", "minLength": 1},
+    "decision_context": {"type": "string"},
+    "decision_owner": {"type": "string", "minLength": 1},
+    "decision_being_supported": {"type": "string"},
+    "inputs": {"type": "object", "additionalProperties": true},
+    "scope": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    "exclusions": {"type": "array", "items": {"type": "string"}},
+    "authority": {
+      "type": "object",
+      "properties": {
+        "research": {"type": "boolean"},
+        "analyze": {"type": "boolean"},
+        "recommend": {"type": "boolean"},
+        "call_tools": {"type": "boolean"},
+        "modify_state": {"type": "boolean"},
+        "external_communication": {"type": "boolean"},
+        "destructive_action": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "output_contract": {"type": "object", "additionalProperties": true},
+    "completion_condition": {"type": "string", "minLength": 1},
+    "return_to": {"type": "string", "minLength": 1},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
