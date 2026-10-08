@@ -13,7 +13,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from typing import Any, Mapping
 
 from ..capacity import CapacityGate, OverloadedError
@@ -289,7 +288,7 @@ class _BoundedHTTPServer(HTTPServer):
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\n"
                     b"Content-Type: application/json\r\n"
-                    b"Content-Length: 38\r\n"
+                    b"Content-Length: 41\r\n"
                     b"Connection: close\r\n\r\n"
                     b'{"error":"service_overloaded","ok":false}'
                 )
@@ -533,7 +532,6 @@ def create_service_server(
         health.register_dependency(DependencyCheck("service_auth", authenticator.ready, critical=True))
     if config.state_backend == "sqlite":
         assert config.sqlite_path is not None
-        # Initialize/migrate before readiness can become true.
         SQLiteRunStore(config.sqlite_path)
         health.register_dependency(
             DependencyCheck(
