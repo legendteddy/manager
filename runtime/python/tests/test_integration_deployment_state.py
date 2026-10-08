@@ -7,10 +7,20 @@ from pathlib import Path
 
 from manager_runtime.deployment import create_sqlite_backup, restore_sqlite_backup
 from manager_runtime.state import SQLITE_STATE_SCHEMA_VERSION, SQLiteRunStore
+from manager_runtime.tools.base import tool_request_fingerprint
 
 
 def _state() -> dict:
     timestamp = "2026-10-08T12:00:00Z"
+    request = {
+        "request_id": "tool-request:backup-integration",
+        "run_id": "run:backup-integration",
+        "tool_name": "synthetic.backup",
+        "arguments": {"value": "backup-integration"},
+        "target": "synthetic-target",
+        "proposed_by": "model",
+        "proposal_ref": "proposal:backup-integration",
+    }
     return {
         "run_id": "run:backup-integration",
         "task_id": "backup-integration",
@@ -29,7 +39,22 @@ def _state() -> dict:
                 "sensitivity": "public",
             },
         },
-        "pending_action": {"phase": "executing", "synthetic": True},
+        "pending_action": {
+            "tool_request": request,
+            "approval": {
+                "approval_id": "approval:backup-integration",
+                "run_id": "run:backup-integration",
+                "action": "synthetic.backup",
+                "target": "synthetic-target",
+                "status": "approved",
+                "materiality": "material",
+                "reason": "Synthetic deployment backup integration fixture.",
+                "issued_at": timestamp,
+                "action_fingerprint": tool_request_fingerprint(request),
+            },
+            "tool_definition_fingerprint": "synthetic-backup-tool-v1",
+            "authorization_context": {"scope_authorized": True},
+        },
         "last_tool_result": None,
         "trace_snapshot": None,
         "result_snapshot": None,
