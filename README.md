@@ -2,218 +2,173 @@
 
 **A governed adaptive agent orchestration system.**
 
-Manager is a provider-neutral framework for deciding how AI work should be executed, delegated, evaluated, approved, and reconciled. Its default is deliberately small: keep simple work direct and add agentic complexity only when it materially improves the result or control of the work.
-
-Manager is a clean public successor to an earlier private agent-governance architecture. The private reference remains migration evidence only. This repository does not expose its identity, mappings, configuration, or operational state.
+Manager is a provider-neutral framework for deciding how AI work should be executed, delegated, evaluated, approved, recovered, and reconciled. Its default remains deliberately small: keep simple work direct and introduce agentic complexity only when it materially improves the result or control of the work.
 
 ## Status
 
-**First-release engineering stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, resumable loop checkpoints, full contract-conformance testing, legal durable-state transition validation, explicit evidence-based recovery resolution, a Manager-owned MCP adapter boundary, end-to-end stdio plus Streamable HTTP protocol tests through the official MCP Python SDK, an explicit threat model, a pre-stable API/versioning policy, supported-Python matrix testing, a known-good direct dependency baseline, and release-candidate construction with a byte-reproducible wheel, checksummed source distribution, and inspectable provenance record.
+**Production-capable reference profile.**
 
-The current classification is **experimental reference implementation**. The project has not published a tagged public software release. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, automatic trust of MCP servers, provider-managed MCP execution, production OAuth/credential handling, TLS/mTLS or enterprise proxy policy, request-scoped SSE response-stream conformance, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
+Manager now includes an integrated governed runtime, durable execution/state model, provider resilience layer, identity and authorization boundary, hostile MCP isolation, SRE/capacity controls, authenticated HTTP service, non-root/read-only-root deployment reference, backup/restore tooling, deterministic release construction, hash-locked dependency reconstruction, SBOM/provenance evidence, and required adversarial/transport verification.
 
-See [`docs/release-readiness.md`](docs/release-readiness.md) for the release gates and remaining gaps, [`docs/release-candidate.md`](docs/release-candidate.md) for candidate construction and verification, and [`docs/threat-model.md`](docs/threat-model.md) for current security assumptions and residual risks.
+This classification means the repository contains a defensible production reference implementation and deployment profile. It does **not** mean any arbitrary deployment is automatically production-ready. A real deployment still has to supply and prove its own identity provider, TLS/DNS, secrets, network/egress policy, datastore topology, backup retention/encryption, telemetry backend, SLOs/on-call ownership, provider quotas, external-side-effect idempotency/reconciliation, and environment-specific load/failure behavior.
+
+The bundled SQLite profile is intentionally **single-instance**. Horizontal production scaling requires a coordinated `RunStore` implementation that preserves Manager's CAS, lease, fencing, durable operation-ledger, recovery, and migration semantics transactionally.
+
+No package publication, tag, GitHub Release, or live production infrastructure is implied by the repository classification.
+
+See [`docs/release-readiness.md`](docs/release-readiness.md) for the exact repository and deployment readiness boundary.
+
+## What Manager provides
+
+### Governed execution
+
+- deterministic routing for routine versus material work;
+- exact approval binding for consequential actions;
+- approval freshness and authorization revalidation immediately before side effects;
+- bounded delegation and finite model/tool budgets;
+- repeated-action detection and no approval carry-forward;
+- authoritative reconciliation and explicit recovery for uncertain external outcomes.
+
+### Identity and security
+
+- provider-neutral secret-provider boundary;
+- signed identity validation and revocation hooks;
+- deny-by-default capability authorization over principal, action, resource, environment, side-effect class, and policy revision;
+- approval binding to the exact authorization decision;
+- strict TLS/proxy/credential-forwarding policy primitives;
+- bounded/redacted public error surfaces.
+
+### Durable execution
+
+- optimistic revisions and compare-and-swap;
+- leases and fencing tokens;
+- durable consequential-operation identities and operation ledger;
+- crash/restart recovery without blind replay of uncertain effects;
+- canonical JSON persistence and revision-integrity validation;
+- fail-closed handling of corrupted or impossible state.
+
+Manager does not claim exactly-once effects for arbitrary third-party systems. External systems still need appropriate idempotency, fencing, verification, or reconciliation semantics.
+
+### Models and providers
+
+- provider-neutral request/response contracts;
+- strict normalized provider validation;
+- bounded retry/backoff and initial-turn failover semantics;
+- provider pinning for continuation;
+- structural separation of untrusted evidence from Manager-owned instructions;
+- OpenAI Responses reference adapter plus deterministic synthetic provider coverage.
+
+### Tools and MCP
+
+- application-owned `ToolRegistry` remains authoritative for side-effect class, schema, version, verification, and sensitivity;
+- bounded JSON-schema/argument validation and immutable registry snapshots;
+- same-session schema-bound consequential MCP execution;
+- finite timeout, pagination, cursor, item, byte, nesting, stderr, and concurrency limits;
+- network/SSRF and stdio process policy;
+- required normal and hostile stdio/Streamable HTTP transport tests.
+
+External tool or MCP metadata is evidence, never authority.
+
+### Service and operations
+
+The `manager-service` entrypoint provides a bounded production HTTP boundary:
+
+- `GET /livez`
+- `GET /readyz`
+- `GET /healthz`
+- `POST /v1/run`
+
+Staging and production require bearer authentication backed by a mounted secret. The service uses strict JSON parsing, bounded request bodies, finite worker/queue admission, readiness-aware overload rejection, generic error surfaces, and graceful SIGTERM/SIGINT drain. It does not expose a network path for arbitrary tool registration or approval bypass.
+
+Operational support includes bounded telemetry, low-cardinality metrics, run/model/tool/MCP/state capacity gates, saturation signals, checkpoint-size admission, operator diagnostics, and documented alerting guidance.
+
+### Deployment reference
+
+The repository includes:
+
+- strict development/testing/staging/production configuration;
+- non-root UID/GID 10001 container execution;
+- read-only-root compatibility;
+- external or direct TLS modes;
+- single-instance SQLite enforcement;
+- online SQLite backup, integrity manifest, verification, and restore-to-new-path safeguards;
+- loopback-only external-TLS Compose reference with an external bearer secret;
+- CI that boots the real authenticated service, verifies readiness/API behavior, and proves clean termination.
+
+See [`docs/deployment.md`](docs/deployment.md), [`docs/service-runtime.md`](docs/service-runtime.md), and [`docs/operator-runbook.md`](docs/operator-runbook.md).
+
+## Release and supply-chain controls
+
+The release-candidate path includes:
+
+- Python 3.11, 3.12, 3.13, and 3.14 compatibility;
+- exact build-backend identity;
+- candidate-specific transitive dependency wheelhouse and SHA-256 lock;
+- offline `--no-index --require-hashes` reconstruction;
+- byte-reproducible wheel and normalized sdist checks in the verified release environment;
+- deterministic CycloneDX SBOM;
+- provenance plus an in-toto/SLSA-shaped statement;
+- exact candidate payload manifest and approval fingerprint;
+- independent candidate verifier and tamper/substitution tests;
+- pinned CI actions and workflow-input shell-boundary checks;
+- prepared OIDC/keyless PyPI publishing that remains disabled until external release authority is configured.
+
+See [`docs/release-candidate.md`](docs/release-candidate.md) and [`docs/release-security.md`](docs/release-security.md).
 
 ## Core principles
 
-- **Minimum necessary agentic complexity.** Simple tasks stay direct.
-- **Capabilities before agents.** A specialization may be performed by the primary model, deterministic code, a tool, an external service, or a specialist agent.
+- **Minimum necessary agentic complexity.** Simple work stays direct.
+- **Capabilities before agents.** Use deterministic code, tools, services, models, or specialists according to the job rather than role-play.
 - **Bounded delegation.** Delegation transfers scoped work, not unlimited authority.
-- **Explicit accountability.** Every substantive decision or sub-decision has one accountable owner.
-- **Consequential approval.** Material, destructive, sensitive, or otherwise consequential actions cross a human approval gate.
-- **Resumable approval.** Approval survives interruption only as a durable, exact checkpoint that must be revalidated before execution.
-- **Bounded iteration.** Multi-step model/tool execution uses finite budgets, loop detection, and fresh policy checks at every step.
-- **Durable loop identity.** Restart preserves consumed budgets, seen-action fingerprints, provider/model identity, and trusted tool-definition fingerprints instead of granting a fresh execution context.
-- **Fail-closed persistence.** Corrupted state, impossible transitions, unsupported checkpoint versions, and uncertain external outcomes stop execution rather than being guessed through.
-- **Contract conformance.** Representative emitted runtime artifacts must validate against the public machine-readable contracts in CI.
-- **Untrusted interoperability.** External protocols may expose capabilities, but Manager retains local authority over classification, authorization, approval, verification, and model exposure.
-- **Authoritative reconciliation.** Update the source that owns the truth first, then propagate dependent effects and verify consistency.
-- **Evidence over ceremony.** Evals and observable outcomes matter more than agent count, role-play, or verbose traces.
-- **Provider neutrality.** Canonical contracts do not depend on one model vendor, tool protocol, state store, or product surface.
-- **Public by default, private by exclusion.** Public framework artifacts live here; private configuration and real operational knowledge stay external.
+- **Consequential approval.** Material, destructive, sensitive, or external-commitment actions cross an explicit approval boundary.
+- **Fresh authority.** Authentication, authorization, approval, tool identity, and target assumptions are revalidated at execution time.
+- **Fail-closed durability.** Corruption, incompatible state, stale workers, unknown outcomes, and unsupported transitions stop rather than guess.
+- **Untrusted interoperability.** Providers, retrieved content, tools, and MCP servers cannot redefine Manager's authority.
+- **Evidence over ceremony.** Evals, verification, recovery evidence, and observable outcomes matter more than agent count.
+- **Provider neutrality.** Canonical contracts do not depend on one model vendor, protocol, datastore, or deployment platform.
+- **Public-safe by default.** Private configuration, credentials, infrastructure, and operational knowledge remain outside the public repository.
 
-## Conceptual lifecycle
+## Logical execution boundary
 
 ```text
 request
   ↓
-frame consequence + uncertainty
+classification + routing
   ↓
-route the smallest sufficient workflow
+identity / policy / capability checks
   ↓
-execute directly / use tools / delegate when justified
+direct work OR bounded model/tool workflow
   ↓
-apply policy, approval, and evaluation gates
+exact approval before consequential action
   ↓
-continue only within explicit model/tool budgets
+execution-time revalidation
   ↓
-checkpoint normalized model/tool state between durable phases
+durable operation identity + guarded execution
   ↓
-checkpoint exact approval before consequential side effects
+verification / recovery_required when uncertain
   ↓
-revalidate before resumed execution
+reconciliation
   ↓
-continue from preserved loop budgets + seen actions
-  ↓
-if outcome is uncertain: recovery_required
-  ↓
-resolve only from explicit external evidence
-  ↓
-reconcile authoritative state
-  ↓
-verify
-  ↓
-deliver
+trace + result
 ```
 
-These are logical checkpoints, not mandatory agent handoffs. A simple task may collapse them into one execution.
-
-## Logical components
-
-```text
-Human principal
-      ↓
-orchestrator
-      ↓
-task classification + routing + policy
-      ↓
-capabilities / specialist agents / tools / interoperability adapters
-      ↓
-evaluation + approval when required
-      ↓
-bounded model/tool continuation when justified
-      ↓
-durable loop/run state for interrupted work
-      ↓
-execution
-      ↓
-recovery + reconciliation + verification
-      ↓
-tracing + evals + schema conformance
-```
-
-Internal components use conventional technical terms such as `orchestrator`, `router`, `capability`, `specialist agent`, `policy`, `approval`, `state`, `evaluator`, `reconciliation`, `tracing`, `eval`, and `adapter`.
-
-## Provider, tool, MCP, loop, and state boundary
-
-Manager's deterministic governance remains outside model providers, MCP servers, and tool implementations.
-
-```text
-Manager control plane
-      ↓
-provider-neutral model request
-      ↓
-model adapter
-      ↓
-model response / tool proposal
-      ↓
-trusted ToolRegistry + deterministic policy
-      ↓
-native tool adapter OR Manager-owned MCP adapter
-      ↓
-analysis/read → execute + checkpoint sanitized result
-consequential → durable approval checkpoint first
-      ↓
-verification
-      ↓
-sanitized verified result
-      ↓
-bounded model continuation when budget remains
-      ↓
-persisted loop checkpoint for restart/resume
-```
-
-A model response supplies content or proposes a tool inside an already-bounded workflow. It cannot approve a material action, lower a tool's side-effect class, grant itself authorization, redefine state ownership, resolve an uncertain external side effect, or bypass reconciliation.
-
-An MCP server may advertise tool names, schemas, descriptions, and annotations. Manager treats those values as untrusted discovery metadata. Only explicitly configured bindings enter the trusted registry, and local Manager configuration remains authoritative for descriptions, side-effect class, verification, sensitivity, and versioning. Schema or binding drift fails closed at registration and is revalidated again immediately before execution.
-
-The first reference provider adapter targets OpenAI's Responses API. The adapter normalizes custom function calls into proposals and maps verified continuation results through `previous_response_id` plus `function_call_output`; execution remains application-owned.
-
-The optional MCP reference bridge targets the official MCP Python SDK v2 line. Connection targets, process commands, URLs, credentials, OAuth configuration, and other environment-specific settings stay outside Manager's canonical contracts. CI exercises the bridge end to end against both a synthetic local stdio MCP subprocess and a synthetic local Streamable HTTP server. The HTTP suite covers governed calls, schema drift, server restart, timeout/cancellation, same-origin and cross-origin redirect behavior, externally supplied synthetic headers, and malformed-response rejection.
-
-The first durable state adapter uses SQLite through Python's standard library. It is a reference durability layer, not an encryption boundary, distributed lock service, or universal production datastore recommendation.
-
-## Reference runtime
-
-The first reference runtime is implemented in Python under [`runtime/python/`](runtime/python/). Python is an implementation choice for the reference runtime, not a canonical requirement for Manager.
-
-The current package advertises and tests Python 3.11, 3.12, 3.13, and 3.14. Its package metadata is intentionally bounded to `>=3.11,<3.15` until a future Python line is explicitly tested and approved.
-
-From the repository root:
-
-```bash
-PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
-PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -v
-python3 -m pip install 'jsonschema>=4.23,<5'
-PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
-```
-
-Optional reference integrations:
-
-```bash
-python3 -m pip install -e 'runtime/python[openai]'
-python3 -m pip install -e 'runtime/python[mcp]'
-PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_transport_conformance.py' -v
-PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_streamable_http_conformance.py' -v
-```
-
-Local release-candidate construction uses the exact direct baseline in [`runtime/python/constraints/known-good.txt`](runtime/python/constraints/known-good.txt):
-
-```bash
-python3 scripts/build_release_candidate.py --output release-candidate
-```
-
-The builder writes wheel and sdist artifacts, `SHA256SUMS`, and `provenance.json`. Required CI builds the candidate twice from the same commit and requires the wheel hash to be identical. The source distribution is checksummed for exact identity but is not currently claimed byte-reproducible. The manual `Build release candidate` workflow can preserve the candidate as a short-lived GitHub Actions artifact, but it does not publish a package, tag, release, cryptographic attestation, or SBOM.
-
-The deterministic eval and base unit-test suite does not require provider credentials, live external MCP services, live production tools, network model calls, or production state stores. Dedicated MCP transport suites use only synthetic local stdio and loopback HTTP servers. Schema conformance uses `jsonschema` as a test-only dependency.
-
-## Manager, MCP, and product integrations
-
-Manager is the core framework/runtime concept.
-
-- **Agent harness**: runtime environment around execution.
-- **MCP**: optional interoperability adapter, not Manager's identity or authority source.
-- **Product/plugin integration**: optional distribution or integration surface.
-
-Manager-owned MCP adapters keep discovery and execution behind the same trusted `ToolRegistry`, policy, approval, verification, redaction, and durable-state boundaries as native tools. Provider-managed MCP execution is not enabled in the reference path because tool execution must remain behind Manager's policy and approval boundary unless equivalent enforcement is proven.
+Models may propose work, but they do not grant authority. Tool and MCP servers may expose capabilities, but Manager retains local policy, authorization, approval, and verification control.
 
 ## Repository map
 
-- [`ARCHITECTURE.md`](ARCHITECTURE.md): logical architecture and invariants
-- [`GOVERNANCE.md`](GOVERNANCE.md): authority, accountability, materiality, approvals, and bounded evolution
-- [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, persistence, recovery, interoperability, and public safety
-- [`CHANGELOG.md`](CHANGELOG.md): unreleased user-visible changes and future release history
-- [`AGENTS.md`](AGENTS.md): instructions for AI systems working in this repository
-- [`contracts/`](contracts/): provider-neutral machine-readable contracts
-- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, MCP adapter boundary, durable run store, bounded agent loop, durable loop-resume state machine, and recovery controls
-- [`docs/release-readiness.md`](docs/release-readiness.md): release classifications, versioning policy, audit matrix, and first-release gates
-- [`docs/release-candidate.md`](docs/release-candidate.md): supported Python lines, dependency lanes, wheel reproducibility, sdist integrity, candidate checksums/provenance, and publication boundary
-- [`docs/threat-model.md`](docs/threat-model.md): trust boundaries, threats, mitigations, residual risks, and security-review triggers
-- [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
-- [`docs/tool-runtime.md`](docs/tool-runtime.md): tool proposal, policy, approval, execution, and verification boundary
-- [`docs/mcp-adapters.md`](docs/mcp-adapters.md): MCP discovery, binding, trust, and execution boundary
-- [`docs/mcp-transport-conformance.md`](docs/mcp-transport-conformance.md): official SDK stdio and Streamable HTTP transport evidence and limits
-- [`docs/agent-loop.md`](docs/agent-loop.md): finite multi-step model/tool continuation and stop conditions
-- [`docs/durable-agent-loop.md`](docs/durable-agent-loop.md): persisted loop phases, restart invariants, and durable continuation behavior
-- [`docs/run-state.md`](docs/run-state.md): durable checkpoints, resumable approvals, and recovery-required behavior
-- [`docs/conformance-recovery.md`](docs/conformance-recovery.md): schema conformance, state transitions, checkpoint versions, and recovery resolution
-- [`docs/handoffs.md`](docs/handoffs.md): bounded delegation contract
-- [`docs/reconciliation.md`](docs/reconciliation.md): authoritative-state reconciliation
-- [`docs/evidence.md`](docs/evidence.md): evidence and claim discipline
-- [`docs/protected-surfaces.md`](docs/protected-surfaces.md): governance surfaces excluded from automatic evolution
-- [`docs/public-private-boundary.md`](docs/public-private-boundary.md): publication boundary
-- [`docs/migration.md`](docs/migration.md): generic migration and parity gates
-- [`evals/README.md`](evals/README.md): behavioral eval strategy and execution status
-- [`examples/README.md`](examples/README.md): synthetic example policy
+- [`contracts/`](contracts/) provider-neutral machine-readable contracts
+- [`runtime/python/`](runtime/python/) Python reference and production-capable runtime
+- [`evals/`](evals/) deterministic behavioral fixtures
+- [`deploy/`](deploy/) container and Compose reference
+- [`docs/`](docs/) security, MCP, state, deployment, operations, release, and recovery documentation
+- [`.github/workflows/`](.github/workflows/) required integrity, deployment, release, and vulnerability-visibility automation
+
+## Verification boundary
+
+Required repository CI verifies the supported Python matrix, complete unit/eval suite, schema conformance, clean reproducible release candidate construction, offline hash-locked reconstruction, normal MCP transports, hostile MCP boundary/stdio/HTTP attacks, and the authenticated production container path.
+
+Those gates prove the exact repository revision. They do not substitute for environment-specific capacity tests, disaster-recovery drills, penetration testing, or operational ownership in a real deployment.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
-
-## Maturity
-
-Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, a tested durable loop-resume path, full Draft 2020-12 conformance checks for representative emitted artifacts, legal state-transition enforcement, corrupted-state rejection, an explicit recovery protocol for uncertain external outcomes, a tested Manager-owned MCP tool-binding boundary, end-to-end official-SDK stdio plus Streamable HTTP transport suites using only synthetic local servers, a documented threat model, modern package metadata, tested Python 3.11–3.14 compatibility, a known-good direct release baseline, and release-candidate tooling that proves same-environment wheel reproducibility while recording exact checksums for both wheel and source distribution.
-
-The repository remains **experimental**. A verified private vulnerability-reporting channel, a decision on fully hashed transitive locking and sdist reproducibility requirements, approved cryptographic release provenance/signing/SBOM policy, a final exact release-candidate audit, tagged artifacts, independent security assessment, and deployment-specific production evidence remain open gates.
-
-Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", "distributed", "trusted MCP", "production HTTP-safe", or "safe for autonomous production side effects" require additional evidence for that exact claim.
+Apache-2.0. See [`LICENSE`](LICENSE).
