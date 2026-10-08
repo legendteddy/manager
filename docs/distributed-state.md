@@ -2,26 +2,31 @@
 
 ## Purpose
 
-Manager's durable runtime must remain safe when more than one process can observe the same run, when workers stop and resume, and when an external operation finishes at an uncertain point relative to local persistence.
+Manager's durable runtime must remain safe when multiple processes can observe the same run, workers crash and resume, clients retry, leases transfer, and an external operation completes at an uncertain point relative to local persistence.
 
-This document describes the executable state-backend contract introduced by Production Worker 02. It records both the guarantees Manager now enforces and the guarantees it deliberately does **not** claim.
+This document describes the executable state-backend contract implemented by Production Worker 02. It records both the guarantees Manager enforces and the guarantees it deliberately does **not** claim.
 
 ## Core invariants
 
-For durable consequential execution:
+For durable execution:
 
-1. a stale state revision cannot overwrite a newer revision;
-2. only the current run lease may perform fenced state transitions;
-3. every ownership transfer advances a monotonic fencing token;
-4. an expired or superseded fencing token never becomes authoritative again;
-5. the original tool `request_id` is the durable operation identity;
-6. a lost response does not create a new operation identity;
-7. a durable operation already recorded as `started` is not executed again automatically;
-8. an adapter or verification failure after execution intent is treated as an uncertain external outcome, not proof that nothing happened;
-9. `recovery_required` blocks normal execution until explicit external evidence resolves the ambiguity;
-10. recovery resolution is serialized under the same lease/fencing boundary as normal durable execution;
-11. approval identity, consumed budgets, seen-action history, and checkpoint revisions remain durable across restart;
-12. exactly-once external effects are not claimed without external-system evidence.
+1. stale state revisions cannot overwrite newer revisions;
+2. an active run lease owns authoritative state mutation for that run;
+3. state mutation during an active lease must carry the matching fencing token;
+4. every ownership transfer advances a monotonic fencing token;
+5. an expired or superseded fencing token never becomes authoritative again;
+6. stale release cannot revoke a successor lease;
+7. the original consequential tool `request_id` is the durable operation identity;
+8. a lost response does not create a new operation identity;
+9. operation identity is bound to the exact run and request fingerprint;
+10. `started` or `outcome_unknown` operations are not executed again automatically;
+11. adapter or verification failure after execution intent is uncertain external outcome evidence, not proof that nothing happened;
+12. `recovery_required` blocks normal execution until explicit external evidence resolves the ambiguity;
+13. recovery decisions are serialized through the same ownership boundary as normal execution;
+14. when an operation ledger row exists, evidence-changing recovery updates the operation row and run row atomically;
+15. approval identity, consumed budgets, seen-action history, and checkpoint revisions survive restart;
+16. duplicate durable-loop submission cannot silently reset budgets or replace the original run identity;
+17. exactly-once external effects are not claimed without external-system evidence.
 
 ## Provider-neutral backend contract
 
@@ -34,51 +39,17 @@ For durable consequential execution:
 - lease validation;
 - lease release;
 - monotonically increasing fencing tokens;
-- a guarded external-execution window;
+- a guarded consequential-execution window;
 - durable operation claims;
 - durable operation completion evidence;
-- operation lookup for restart/recovery.
+- operation lookup for restart/recovery;
+- atomic operation-ledger plus run-state recovery resolution.
 
-A backend advertises these through `RunStoreCapabilities`. Consequential durable execution fails closed when the backend cannot supply the required semantics.
+Backends advertise these guarantees through `RunStoreCapabilities`. Consequential durable execution fails closed when the store does not expose the required capability set.
 
-This interface is intended to be implementable by SQLite for local/reference use and by PostgreSQL-class transactional databases or future transactional backends for deployment-specific production use.
+The interface is provider-neutral. SQLite supplies a local/reference implementation. A PostgreSQL-class or future transactional backend must implement the same semantics and pass equivalent real-concurrency tests before it may claim the same execution guarantees.
 
-## SQLite reference semantics
-
-`SQLiteRunStore` now implements schema version `2`.
-
-It coordinates processes that share the same SQLite database file. It uses:
-
-- `BEGIN IMMEDIATE` for transactional CAS and lease changes;
-- a database-authoritative clock for lease expiry checks;
-- a durable `manager_run_leases` table;
-- a durable `manager_operations` table;
-- monotonic fencing-token increments when ownership transfers;
-- a local execution guard that retains SQLite writer ownership while a consequential adapter call is in flight.
-
-The execution guard closes an important local race. Without it, worker B could observe `status = executing`, decide worker A was dead, and transition the run to recovery while worker A was still actively performing the external call. With the guard, another process sharing the database file cannot transfer ownership or write recovery state during that in-flight execution window.
-
-### SQLite coordination scope
-
-The advertised coordination scope is:
-
-```text
-local_multi_process
-```
-
-This is intentionally narrower than `distributed` or `horizontally_scaled`.
-
-SQLite remains useful for:
-
-- local execution;
-- integration tests;
-- deterministic crash/concurrency tests;
-- single-host multi-process coordination where all processes share the same database file and filesystem assumptions are appropriate;
-- reference semantics for stronger backend implementations.
-
-SQLite is **not** represented as a universal HA datastore, consensus system, network lock service, or horizontally scaled production backend.
-
-## Lease and fencing semantics
+## Durable run ownership
 
 A lease contains:
 
@@ -89,28 +60,97 @@ fencing_token
 expires_at_epoch
 ```
 
-A new lease may be acquired only when there is no unexpired current owner. When ownership transfers after release or expiry, the fencing token increases.
+A lease can be acquired only when there is no unexpired current owner. Transfer after release or expiry increases the fencing token.
 
 Example:
 
 ```text
 worker A -> fence 7
-worker A expires
+worker A expires or releases
 worker B -> fence 8
-worker A resumes late -> rejected forever as stale fence 7
+worker A resumes late -> fence 7 remains stale forever
 ```
 
-A fence is checked transactionally with fenced state mutation. A stale worker cannot silently write over newer state merely because it resumes later.
+A fence is checked in the same transaction as a fenced state write. A stale worker therefore cannot regain authority merely because it resumes later.
 
-### Important external-system boundary
+Plain SQLite `compare_and_swap()` is also guarded: while an unexpired lease exists, unfenced CAS is rejected. Code that owns a lease must use `fenced_compare_and_swap()`.
 
-A Manager fencing token protects Manager-owned durable state only if the state backend enforces it.
+## Durable-loop submission identity
 
-It does **not** automatically fence an arbitrary external API. Strict external fencing requires the external system to accept and enforce a monotonic fence or an equivalent conditional/idempotent write primitive.
+The durable bounded loop now creates a run claim **before the first provider request**.
+
+The initial claim records an `initial_provider` marker containing:
+
+- provider and model identity;
+- exposed tool names and trusted tool-definition fingerprints;
+- model input;
+- model-step budget;
+- tool-call budget;
+- tool-result continuation bound;
+- output-token bound.
+
+It also stores a durable submission fingerprint. A duplicate submission with the same deterministic run identity but different execution-defining inputs or budgets fails closed instead of silently resetting the run.
+
+If the process disappears during the first provider request, the initial claim remains durable and restart uses the same deterministic provider request identity. This prevents two live workers from concurrently owning the same initial durable run.
+
+This does **not** prove exactly-once provider calls. A provider may have accepted a request whose response was lost before Manager persisted it, so a restart can reissue that provider request. Stale provider responses cannot overwrite newer Manager state because lease/fence/revision checks still apply.
+
+## SQLite reference semantics
+
+`SQLiteRunStore` currently exposes schema version `3` and reports coordination scope:
+
+```text
+local_multi_process
+```
+
+It coordinates processes that share the same SQLite database file. It uses:
+
+- `BEGIN IMMEDIATE` for transactional CAS and lease changes;
+- a database-authoritative clock for lease expiry checks;
+- `manager_run_leases` for durable ownership/fencing state;
+- `manager_operations` for durable consequential-operation evidence;
+- a local execution guard that retains SQLite writer ownership while a consequential adapter call is in flight;
+- schema-v3 database triggers that reject pre-coordination runtimes attempting to write `manager_runs`;
+- schema-shape and trigger-integrity validation on open.
+
+### Why the SQLite execution guard is deliberately coarse
+
+Without an execution guard, worker B could observe `status = executing`, assume worker A was dead, transfer ownership, and begin recovery while worker A was still actively performing the external call.
+
+The SQLite reference implementation prevents that race by retaining writer ownership across the actual consequential adapter/verification call. This serializes SQLite writes more broadly than a network database implementation should need to. It is a correctness-first reference behavior, not a horizontal-scaling recommendation.
+
+### SQLite scope
+
+SQLite remains useful for:
+
+- local execution;
+- deterministic integration/concurrency/crash tests;
+- single-host multi-process coordination when every process shares the same database file and filesystem assumptions are appropriate;
+- reference semantics for stronger transactional backends.
+
+SQLite is **not** represented as a universal HA datastore, consensus system, network lock service, shared-network-filesystem recommendation, or horizontally scaled production backend.
+
+## Mixed-runtime protection
+
+Schema v3 addresses a dangerous rolling-upgrade case.
+
+A pre-v3 Manager runtime understands only `manager_runs`; it does not know leases or fencing. Without a database-level guard, such a process could open an upgraded file and write run state while newer workers believed lease ownership was authoritative.
+
+Every v3 connection created by `SQLiteRunStore` registers:
+
+```text
+manager_runtime_schema_version()
+```
+
+Schema-v3 `BEFORE INSERT`, `BEFORE UPDATE`, and `BEFORE DELETE` triggers on `manager_runs` invoke that function. Older runtimes do not register it, so their authoritative writes fail at SQLite.
+
+The runtime validates the guard trigger bodies on open. A same-named but ineffective trigger is rejected.
+
+This is a mixed-version safety mechanism for supported Manager runtimes, not a security boundary against an actor with arbitrary database-administration access.
 
 ## Durable operation identity
 
-For a consequential approved tool action, Manager uses the original tool `request_id` as the durable operation ID.
+For an approved consequential tool action, Manager uses the original tool `request_id` as the durable operation ID.
 
 The operation record binds:
 
@@ -123,16 +163,14 @@ status
 result evidence
 ```
 
-The request fingerprint binds the exact tool name, target, and arguments.
+The request fingerprint binds exact tool name, target, and arguments. Cross-run operation-ID reuse or inconsistent confirmed result identity fails closed.
 
 Operation statuses are:
 
-- `started`: execution intent was durably claimed, but a verified outcome is not durable;
-- `confirmed`: Manager has a durable verified execution result;
-- `not_executed`: Manager has durable evidence that this claimed path did not execute the external effect;
-- `outcome_unknown`: the adapter was invoked but the runtime cannot prove the real-world result.
-
-An operation-ID collision with a different run or request fingerprint fails closed.
+- `started`: execution intent was claimed, but a verified outcome is not durable;
+- `confirmed`: Manager has durable verified execution evidence;
+- `not_executed`: external evidence proves the claimed prior path did not execute the effect;
+- `outcome_unknown`: the adapter was invoked but Manager cannot prove the real-world outcome.
 
 ## Consequential execution protocol
 
@@ -141,129 +179,175 @@ The reference flow is:
 ```text
 load waiting approval
   -> acquire lease
-  -> revalidate exact approval/request/tool/authorization
+  -> revalidate exact approval/request/tool/current authorization
   -> fenced CAS to executing
   -> durably claim operation_id = original request_id
   -> enter guarded execution window
   -> invoke adapter + verifier
-  -> record confirmed OR outcome_unknown
+  -> persist confirmed OR outcome_unknown evidence
   -> fenced CAS final/recovery state
   -> release lease
 ```
 
-If another worker sees the same operation identity:
+If another worker encounters the same operation identity:
 
-- `confirmed`: reuse durable evidence; do not invoke the external tool again;
-- `started`: do not execute again; require recovery;
-- `outcome_unknown`: do not execute again; require recovery;
-- `not_executed`: normal automatic execution still does not revive the old approval; recovery policy determines the next fresh approval identity.
+- `confirmed`: reuse durable evidence; never invoke the external tool again;
+- `started`: do not execute again; require reconciliation/recovery;
+- `outcome_unknown`: do not execute again; require reconciliation/recovery;
+- `not_executed`: the historical operation remains closed; a later retry requires the explicit recovery path and a fresh request/approval identity.
 
 ## Crash windows
 
 ### Before executing intent commit
 
-No external effect has been attempted. A stale state writer is rejected by revision/fence checks.
+No external effect has been attempted. Stale state mutation is rejected by revision/fence checks.
 
 ### After executing intent, before durable operation claim
 
-The run is `executing`. A later worker cannot prove it is safe to replay and moves through explicit recovery semantics rather than blindly invoking the tool.
+The run is `executing` but Manager cannot prove whether an external attempt began. Restart does not blindly execute. It enters explicit recovery semantics.
 
-### After durable operation claim, before adapter invocation
+### After operation claim, before adapter invocation
 
-The durable operation is `started`. Automatic replay is suppressed. This is intentionally conservative: Manager prefers an operator/evidence reconciliation over risking a duplicate consequential effect.
+The durable operation is `started`. Automatic replay is suppressed. This is intentionally conservative: Manager prefers reconciliation over risking a duplicate consequential effect.
 
 ### During or after adapter invocation, before confirmation
 
-The durable operation remains `started` if the worker disappears. A normal adapter or verifier failure is recorded as `outcome_unknown`.
+A process loss leaves the durable operation `started`. A normal adapter/verification failure is recorded as `outcome_unknown`.
 
-A later worker does not retry automatically.
+Restart does not retry automatically.
 
-### After durable confirmed result, before final run-state commit
+### After confirmed operation evidence, before final run-state commit
 
-The confirmed operation record is durable. A later worker can reconstruct local run progress from that evidence without executing the external tool again.
+The confirmed operation row is durable. Restart can reuse that evidence to repair local run progress without invoking the external tool again.
 
 ### After final run-state commit, before client response
 
-The completed/recovery state and durable operation evidence survive a lost client response. Retrying the same operation identity does not cause another external execution.
+Run state and operation evidence survive the lost response. Client retry with the same durable identity does not cause another external tool execution.
 
 ## Recovery
 
-`recovery_required` remains a first-class state, not an error string and not an invitation to retry.
+`recovery_required` is a first-class safety state. It is not an error string and not permission to retry.
 
-Resolution requires explicit external evidence and one of the existing decisions:
+Resolution requires explicit evidence with one of:
 
 - `confirmed_succeeded`;
 - `confirmed_not_executed`;
 - `cancelled`.
 
-Recovery resolution now acquires a coordinated lease and performs its state change with a fencing token. Competing recovery decisions therefore cannot both become authoritative.
+Competing recovery decisions acquire the same run lease, so only one can become authoritative.
 
-`confirmed_not_executed` creates a fresh request and approval identity. It does not revive the old approval and does not execute immediately.
+When an uncertain durable operation row exists:
+
+- `confirmed_succeeded` atomically changes the operation to `confirmed` and advances the run;
+- `confirmed_not_executed` atomically changes the historical operation to `not_executed` and advances the run to a **fresh** request/approval identity;
+- `cancelled` terminates the run without rewriting uncertain operation evidence, because cancellation is not proof of the external outcome.
+
+A rollback test verifies that if the run transition fails, the operation-ledger update is rolled back in the same transaction.
+
+Cancellation deliberately does not require the historical tool adapter to remain installed: cancelling executes nothing and must remain possible after tool removal or version change.
 
 ## Schema migration
 
-SQLite durable-state schema versions are tracked in:
+SQLite durable-state versions are tracked in `manager_state_meta`.
 
-```text
-manager_state_meta
-```
+### Version 1
 
-Version `1` is the historical `manager_runs`-only layout.
+Historical `manager_runs`-only layout.
 
-Version `2` adds:
+### Version 2
+
+Adds:
 
 ```text
 manager_run_leases
 manager_operations
 ```
 
-The v1 -> v2 migration is executed transactionally on store initialization.
+### Version 3
 
-Rules:
+Adds the mixed-runtime `manager_runs` write fence and stronger schema validation.
 
-- existing pre-versioned `manager_runs` databases are recognized as v1;
-- migration advances monotonically to v2;
-- unknown newer schema versions fail closed;
-- missing/corrupted migration metadata fails closed;
-- incomplete expected schema fails closed;
+Migration behavior:
+
+- a pre-versioned historical `manager_runs` database is recognized and advanced through the reviewed migrations;
+- v1 → v2 is transactional;
+- v2 → v3 is transactional;
+- data survives the v2 → v3 upgrade;
+- old v2 runtime writes fail after the database reaches v3;
+- unknown future schema versions fail closed;
+- missing/corrupted version metadata fails closed;
+- missing required tables fail closed;
+- missing required columns or primary keys fail closed;
+- missing run foreign keys fail closed;
+- missing or malformed runtime-guard triggers fail closed;
 - no best-effort downgrade is attempted.
 
-Rollback to code that understands only the old layout is not presented as a supported migration strategy. Operators should use backup/restore or a reviewed forward migration plan appropriate to their deployment.
+Rollback to old code is not presented as a supported database downgrade. Use backup/restore or a reviewed forward migration plan appropriate to the deployment.
+
+## Checkpoint compatibility
+
+Durable agent-loop checkpoints retain explicit checkpoint versioning. Unknown future checkpoint versions fail closed; no runtime guesses how to reinterpret authority, budgets, or prior approvals.
+
+The pre-first-provider `initial_provider` marker also carries its own version and is validated before restart.
+
+A future breaking checkpoint format must add an explicit reviewed migration that advances monotonically and does not widen authority or replenish consumed budgets.
 
 ## Tested concurrency and failure cases
 
-The reference suite includes deterministic coverage for:
+Deterministic tests now cover, among other cases:
 
 - stale revision rejection;
 - active lease exclusivity;
-- ownership transfer with a higher fencing token;
-- expired/stale fencing-token rejection;
+- lease expiry and transfer;
+- monotonically increasing fencing tokens;
+- stale worker rejection;
+- stale lease release unable to revoke a successor;
+- unfenced CAS rejected while a lease is active;
 - durable operation duplicate suppression;
-- operation-identity collision rejection;
-- live executor versus second-worker takeover attempt;
-- crash after an external effect but before confirmation;
-- adapter failure after execution intent;
+- cross-run operation-ID collision rejection;
+- inconsistent confirmed operation evidence rejection;
+- two workers racing one consequential execution;
+- duplicate approval/resume while an executor is live;
+- duplicate initial durable-loop submission;
+- same run identity with changed submission/budget rejected;
+- active provider continuation ownership;
+- crash during initial provider request;
+- crash after external effect but before confirmation;
+- adapter/verification failure after execution intent;
 - preservation of `outcome_unknown`;
-- restart with a `started` operation;
+- restart with `started` operation;
 - no automatic retry from uncertain evidence;
-- v1 -> v2 migration;
-- rejection of unknown future SQLite schema versions;
-- existing recovery and checkpoint conformance tests.
+- atomic operation/run recovery;
+- atomic rollback when recovery run transition fails;
+- conflicting concurrent recovery decisions;
+- cancellation after historical tool removal;
+- v1 migration;
+- direct v2 → v3 migration with preserved data;
+- old-runtime writes rejected after v3 upgrade;
+- corrupted schema shape rejected;
+- missing/malformed runtime guard rejected;
+- unknown future SQLite schema versions rejected;
+- existing checkpoint/recovery contract-conformance cases.
 
-Repository CI exercises the runtime on the supported Python matrix and repeats the full unit/eval/schema/package/transport gates.
+Repository CI executes unit tests on Python 3.11, 3.12, 3.13, and 3.14, deterministic behavioral evals, schema/runtime conformance, reproducible wheel builds, and MCP transport conformance.
 
-## What is guaranteed by the current reference implementation
+## Guarantees of the current SQLite reference implementation
 
-Within the documented SQLite coordination scope, when callers use the durable coordinated execution path:
+Within the documented local/shared-file coordination scope, when callers use the coordinated durable paths:
 
 - stale revisions cannot overwrite newer revisions;
-- an active execution guard prevents a second local process from taking ownership during a consequential adapter call;
+- only the active fence can mutate a leased run;
+- a stale release cannot revoke a successor lease;
+- a live consequential executor cannot be concurrently taken over through the reference SQLite backend;
 - ownership transfer permanently fences older tokens from Manager state mutation;
-- duplicate operation identity survives process restart;
-- known confirmed operation evidence can be reused without repeating the tool call;
+- durable operation identity survives process restart and client retry;
+- confirmed operation evidence is reused without repeating the external tool call;
 - unknown operation outcomes remain explicit and block automatic replay;
-- competing recovery resolutions are serialized;
-- schema migration state is versioned and future versions fail closed.
+- recovery decisions are serialized;
+- evidence-changing recovery keeps the operation ledger and run state transactionally consistent;
+- duplicate durable-loop submissions cannot silently reset persisted execution controls;
+- upgraded SQLite files reject writes from the known pre-coordination runtime implementation;
+- schema and checkpoint versions fail closed when unsupported or materially corrupted.
 
 ## What is NOT guaranteed
 
@@ -275,45 +359,51 @@ The current implementation does **not** establish:
 - distributed consensus;
 - linearizability across independent SQLite files;
 - safe shared-SQLite operation over arbitrary network filesystems;
-- PostgreSQL production readiness merely because an interface exists;
+- PostgreSQL production readiness merely because a protocol exists;
 - external fencing when the target system ignores Manager fencing tokens;
 - external idempotency when the target system ignores Manager operation IDs;
 - atomic transactions spanning Manager's database and an arbitrary external system;
-- resolution of an unknown external outcome without external evidence;
+- automatic determination of an unknown external outcome;
+- authenticated worker identity solely from a caller-provided `owner_id`;
 - encrypted state at rest;
 - HA, backup, disaster recovery, capacity, replication, failover, TLS, credential, or network-policy guarantees.
+
+Provider/model requests can still be duplicated if a request succeeds externally but the worker loses its response, or if a provider call outlives its lease and another owner resumes. Manager fences stale local state writes but cannot invent provider-side idempotency.
 
 ## Requirements for a horizontally scaled production backend
 
 A production network state backend should provide, at minimum:
 
 1. transactional compare-and-swap or equivalent conditional updates;
-2. lease acquisition/renewal/transfer using a database-authoritative time source;
+2. lease acquisition/renewal/transfer using a backend-authoritative time source;
 3. monotonic fencing tokens stored transactionally with ownership;
-4. fenced writes that reject stale tokens in the same transaction as the state mutation;
-5. unique durable operation identities and request fingerprints;
-6. transactionally durable operation-outcome records;
-7. crash-safe schema migrations with explicit version tracking;
-8. appropriate isolation semantics documented and tested under real concurrency;
-9. bounded lock/transaction timeouts and observable contention;
-10. HA/backup/restore/replication evidence appropriate to the deployment;
-11. encryption, access control, credentials, TLS, and network policy owned by the embedding environment;
-12. external-system idempotency keys, conditional writes, reconciliation APIs, or fencing support where consequential effects require stronger guarantees.
+4. fenced writes rejecting stale tokens in the same transaction as mutation;
+5. a safe execution-ownership mechanism that does not allow takeover while a consequential call is actively in its uncertain window;
+6. unique durable operation identities and request fingerprints;
+7. transactionally durable operation-outcome records;
+8. atomic operation-ledger/run-state recovery resolution;
+9. crash-safe schema migrations with explicit version tracking;
+10. reviewed mixed-version deployment behavior;
+11. documented/tested isolation semantics under real concurrent sessions;
+12. bounded lock/transaction timeouts and observable contention;
+13. HA/backup/restore/replication evidence appropriate to the deployment;
+14. encryption, access control, credentials, TLS, and network policy owned by the embedding environment;
+15. external-system idempotency keys, conditional writes, reconciliation APIs, or fencing support wherever stronger real-world guarantees are required.
 
-PostgreSQL-class databases are a natural implementation target, but this repository does not claim a PostgreSQL adapter is production-ready until it exists and passes the same contract tests against real concurrent database sessions.
+PostgreSQL-class databases are a natural implementation target, but this repository does not claim a PostgreSQL adapter is production-ready until one exists and passes the same contract tests against real concurrent database sessions and deployment failure modes.
 
-## Remaining distributed assumptions
+## Remaining distributed assumptions and infrastructure requirements
 
-The reference runtime still relies on deployment-specific answers for:
+The reference runtime still requires deployment-specific answers for:
 
-- how worker identities are issued and authenticated;
-- how long lease TTLs should be for workload latency distributions;
-- whether long-running operations require lease heartbeats;
-- how a production backend behaves during partitions and failover;
-- how provider requests are deduplicated, if at all;
-- which external tools support idempotency keys or fencing tokens;
-- how recovery evidence is obtained and authorized;
-- retention and cleanup policy for historical operation evidence;
-- database capacity, monitoring, backup, restore, and disaster recovery.
+- authenticated/stable worker identity issuance;
+- lease TTL selection for real workload latency distributions;
+- heartbeat strategy for long-running provider/read operations;
+- behavior under network partitions, failover, replica lag, and clock/leadership changes in the chosen network database;
+- provider request idempotency or reconciliation;
+- external tool support for idempotency keys, fencing tokens, conditional writes, or authoritative lookup/reconciliation APIs;
+- authorization and provenance of recovery evidence;
+- retention/cleanup policy for historical operation evidence;
+- database capacity, monitoring, backup, restore, disaster recovery, encryption, and access control.
 
-These are operational requirements, not details Manager should silently invent.
+These are explicit operational requirements. Manager does not silently manufacture guarantees for infrastructure or external systems that do not provide them.
