@@ -4,6 +4,7 @@ import unittest
 from copy import deepcopy
 
 from manager_runtime.mcp import MCPBoundaryError, register_mcp_bindings
+from manager_runtime.mcp.base import remote_schema_fingerprint
 from manager_runtime.tools import ToolRegistry, execute_tool_request
 
 
@@ -19,6 +20,7 @@ class FakeMCPClient:
     def __init__(self, server_id: str = "catalog") -> None:
         self.server_id = server_id
         self.calls: list[tuple[str, dict]] = []
+        self.checked_calls: list[tuple[str, str]] = []
         self.tools = [
             {
                 "name": "remote_lookup",
@@ -42,6 +44,26 @@ class FakeMCPClient:
     def call_tool(self, name: str, arguments: dict):
         self.calls.append((name, deepcopy(arguments)))
         return {"remote": name, "query": arguments["query"]}
+
+    def call_tool_checked(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        expected_schema_fingerprint: str,
+    ):
+        matches = [item for item in self.tools if item["name"] == name]
+        if len(matches) != 1:
+            raise MCPBoundaryError("synthetic checked discovery mismatch")
+        actual = remote_schema_fingerprint(matches[0]["inputSchema"])
+        self.checked_calls.append((name, expected_schema_fingerprint))
+        if actual != expected_schema_fingerprint:
+            raise MCPBoundaryError("synthetic schema changed before checked execution")
+        return self.call_tool(name, arguments)
+
+
+class LegacyMCPClient(FakeMCPClient):
+    call_tool_checked = None
 
 
 def binding(
@@ -134,12 +156,24 @@ class MCPAdapterTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "executed")
         self.assertEqual(client.calls, [("remote_lookup", {"query": "alpha"})])
+        self.assertEqual(len(client.checked_calls), 1)
 
     def test_consequential_binding_requires_local_verifier(self) -> None:
         client = FakeMCPClient()
         configured = binding(side_effect_class="reversible_write")
         with self.assertRaisesRegex(MCPBoundaryError, "requires an application-owned verifier"):
             register_mcp_bindings(ToolRegistry(), client, [configured])
+
+    def test_consequential_binding_requires_schema_bound_client(self) -> None:
+        client = LegacyMCPClient()
+        configured = binding(side_effect_class="reversible_write")
+        with self.assertRaisesRegex(MCPBoundaryError, "schema-bound execution support"):
+            register_mcp_bindings(
+                ToolRegistry(),
+                client,
+                [configured],
+                verifiers={"catalog.lookup": lambda arguments, output: True},
+            )
 
     def test_material_write_requires_manager_approval_before_mcp_call(self) -> None:
         client = FakeMCPClient()
@@ -175,6 +209,42 @@ class MCPAdapterTests(unittest.TestCase):
         self.assertEqual(second["status"], "executed")
         self.assertEqual(second["verification"]["status"], "pass")
         self.assertEqual(len(client.calls), 1)
+        self.assertEqual(len(client.checked_calls), 1)
+
+    def test_schema_drift_between_registration_and_execution_fails_before_call(self) -> None:
+        client = FakeMCPClient()
+        registry = ToolRegistry()
+        configured = binding(side_effect_class="reversible_write")
+        register_mcp_bindings(
+            registry,
+            client,
+            [configured],
+            verifiers={"catalog.lookup": lambda arguments, output: True},
+        )
+        first = execute_tool_request(
+            task("material"),
+            request(),
+            registry,
+            {"scope_authorized": True},
+        )
+        approval = deepcopy(first["approval"])
+        approval["status"] = "approved"
+        client.tools[0]["inputSchema"] = {
+            "type": "object",
+            "properties": {"query": {"type": "integer"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        }
+
+        second = execute_tool_request(
+            task("material"),
+            request(),
+            registry,
+            {"scope_authorized": True, "approval": approval},
+        )
+        self.assertEqual(second["status"], "failed")
+        self.assertEqual(second["decision_reason"], "tool_execution_failed")
+        self.assertEqual(client.calls, [])
 
     def test_effective_version_binds_server_and_remote_schema_identity(self) -> None:
         registry_a = ToolRegistry()
