@@ -25,6 +25,11 @@ def _authorization_flag(authorization: ToolPayload, key: str) -> bool:
     return value
 
 
+def _safe_exception_type(exc: BaseException) -> str:
+    """Return bounded diagnostic metadata without exception message contents."""
+    return type(exc).__name__
+
+
 def _approval_packet(
     request: ToolPayload,
     *,
@@ -278,7 +283,7 @@ def execute_tool_request(
             status="failed",
             reason="tool_execution_failed",
             verification_status="unverified",
-            error=f"{type(exc).__name__}: {exc}",
+            error=_safe_exception_type(exc),
         )
 
     redacted = bool(definition.get("sensitive_output", False))
@@ -306,9 +311,9 @@ def execute_tool_request(
                 status="failed",
                 reason="verification_failed",
                 verification_status="fail",
-                verification_details=f"Verification raised {type(exc).__name__}.",
+                verification_details=f"Verification raised {_safe_exception_type(exc)}.",
                 output=public_output,
-                error=f"{type(exc).__name__}: {exc}",
+                error=_safe_exception_type(exc),
                 redacted=redacted,
             )
         if not verified:

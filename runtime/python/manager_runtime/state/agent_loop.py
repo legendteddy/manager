@@ -33,12 +33,19 @@ def _now() -> str:
 
 
 def _safe_authorization_context(value: dict[str, Any] | None) -> dict[str, Any]:
-    source = value or {}
-    return {
-        key: bool(source.get(key))
-        for key in ("scope_authorized", "human_intent_confirmed", "target_verified")
-        if key in source
-    }
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise RunStateError("authorization context must be an object")
+    result: dict[str, Any] = {}
+    for key in ("scope_authorized", "human_intent_confirmed", "target_verified"):
+        if key not in value:
+            continue
+        raw = value[key]
+        if not isinstance(raw, bool):
+            raise RunStateError(f"authorization field {key!r} must be boolean")
+        result[key] = raw
+    return result
 
 
 def _tool_fingerprints(registry: ToolRegistry, allowed_tools: list[str]) -> dict[str, str]:
@@ -387,8 +394,24 @@ def _advance(
                     reason="model_step_budget_exhausted",
                 )
             request = _continuation_request(task, checkpoint, definitions)
-            response = adapter.generate(request)
-            validate_model_response(response)
+            try:
+                response = adapter.generate(request)
+                validate_model_response(response, expected_provider=adapter.provider)
+            except Exception:
+                output = _set_stop(
+                    output,
+                    reason="model_provider_boundary_failed",
+                    status="failed",
+                    model_steps=model_steps,
+                    tool_calls=tool_calls,
+                )
+                return _persist_stop(
+                    store,
+                    state,
+                    output,
+                    stop_status="failed",
+                    reason="model_provider_boundary_failed",
+                )
             model_steps += 1
             output["trace"]["events"].append(_model_trace_event(response, model_steps))
             capability = f"model-provider:{response['provider']}"
@@ -427,7 +450,23 @@ def _advance(
         response = checkpoint.get("current_response")
         if not isinstance(response, dict):
             raise RunStateError("response_ready checkpoint is missing current_response")
-        validate_model_response(response)
+        try:
+            validate_model_response(response, expected_provider=adapter.provider)
+        except Exception:
+            output = _set_stop(
+                output,
+                reason="model_response_invalid",
+                status="failed",
+                model_steps=model_steps,
+                tool_calls=tool_calls,
+            )
+            return _persist_stop(
+                store,
+                state,
+                output,
+                stop_status="failed",
+                reason="model_response_invalid",
+            )
         output["model_response"] = deepcopy(response)
         output["model_responses"] = [deepcopy(response)]
 
@@ -782,7 +821,20 @@ def run_durable_agent_loop(
         }
         return output
 
-    validate_model_response(response)
+    try:
+        validate_model_response(response, expected_provider=adapter.provider)
+    except Exception:
+        output["trace"]["status"] = "failed"
+        output["result"]["status"] = "failed"
+        output["result"]["finding"] = "Model response failed durable boundary validation."
+        output["durable_state"] = None
+        output["agent_loop"] = {
+            "status": "failed",
+            "stop_reason": "model_response_invalid",
+            "model_steps": 1,
+            "tool_calls": 0,
+        }
+        return output
     output["model_responses"] = [deepcopy(response)]
     output["tool_results"] = []
     checkpoint = _checkpoint(
@@ -850,7 +902,6 @@ def _checkpoint_after_approved_action(
     )
     trace = deepcopy(state.get("trace_snapshot") or {})
     trace["status"] = "running"
-    request = state.get("pending_action")
     # resume_tool_approval clears pending_action after successful execution, so
     # the exact proposal identity is preserved in the loop checkpoint instead.
     trace.setdefault("events", []).append(
@@ -864,7 +915,7 @@ def _checkpoint_after_approved_action(
     result_snapshot = deepcopy(state.get("result_snapshot") or {})
     result_snapshot["owner_decision_required"] = False
     result_snapshot["decision_request"] = None
-    result_snapshot["status"] = "running"
+    result_snapshot["status"] = "partial"
     output = {"trace": trace, "result": result_snapshot}
     next_checkpoint = deepcopy(checkpoint)
     next_checkpoint["phase"] = "continuation_ready"

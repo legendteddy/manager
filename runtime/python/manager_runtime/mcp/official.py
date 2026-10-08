@@ -95,12 +95,48 @@ class OfficialMCPClient:
             sdk_error = self._find_nested_sdk_error(exc)
             if sdk_error is not None:
                 raise MCPBoundaryError(
-                    f"MCP {operation} failed: {sdk_error}"
+                    f"MCP {operation} failed ({type(sdk_error).__name__})"
                 ) from sdk_error
 
+            # Transport/SDK exception messages may contain remote response text,
+            # URLs, headers, or credentials. Keep the chain locally but expose
+            # only the exception class through Manager's public boundary.
             raise MCPBoundaryError(
-                f"MCP {operation} failed: {type(exc).__name__}: {exc}"
+                f"MCP {operation} failed ({type(exc).__name__})"
             ) from exc
+
+    @staticmethod
+    def _normalize_call_result(result: Any, name: str) -> Any:
+        payload = OfficialMCPClient._dump(result)
+        if not isinstance(payload, dict):
+            return payload
+        if bool(payload.get("isError") or payload.get("is_error")):
+            raise MCPBoundaryError(f"MCP tool returned an error result: {name}")
+
+        if "structuredContent" in payload:
+            return payload["structuredContent"]
+        if "structured_content" in payload:
+            return payload["structured_content"]
+        return payload.get("content", payload)
+
+    @staticmethod
+    async def _discover_tool(client: Any, name: str) -> dict[str, Any]:
+        matches: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            page = await client.list_tools(cursor=cursor)
+            for tool in page.tools:
+                normalized = normalize_mcp_tool(tool)
+                if normalized["name"] == name:
+                    matches.append(normalized)
+            cursor = page.next_cursor
+            if cursor is None:
+                break
+        if not matches:
+            raise MCPBoundaryError(f"MCP tool disappeared before execution: {name}")
+        if len(matches) != 1:
+            raise MCPBoundaryError(f"MCP discovery returned duplicate tool name: {name}")
+        return matches[0]
 
     def list_tools(self) -> list[dict[str, Any]]:
         _, Client = self._imports()
@@ -113,8 +149,7 @@ class OfficialMCPClient:
                 while True:
                     page = await client.list_tools(cursor=cursor)
                     for tool in page.tools:
-                        normalized = normalize_mcp_tool(tool)
-                        collected.append(normalized)
+                        collected.append(normalize_mcp_tool(tool))
                     cursor = page.next_cursor
                     if cursor is None:
                         return collected
@@ -122,40 +157,46 @@ class OfficialMCPClient:
         return self._run_operation("tool discovery", collect)
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        """Invoke a tool after same-session existence discovery."""
         _, Client = self._imports()
         target = self.target
 
         async def invoke() -> Any:
             async with Client(target) as client:
-                # Discover immediately before execution. Manager-owned MCP tool
-                # adapters perform the authoritative schema fingerprint check;
-                # this bridge also refuses a tool that disappeared entirely.
-                cursor: str | None = None
-                found = False
-                while True:
-                    page = await client.list_tools(cursor=cursor)
-                    if any(tool.name == name for tool in page.tools):
-                        found = True
-                        break
-                    cursor = page.next_cursor
-                    if cursor is None:
-                        break
-                if not found:
-                    raise MCPBoundaryError(
-                        f"MCP tool disappeared before execution: {name}"
-                    )
-
+                await self._discover_tool(client, name)
                 result = await client.call_tool(name, arguments=arguments)
-                payload = self._dump(result)
-                if not isinstance(payload, dict):
-                    return payload
-                if bool(payload.get("isError") or payload.get("is_error")):
-                    raise MCPBoundaryError(f"MCP tool returned an error result: {name}")
-
-                if "structuredContent" in payload:
-                    return payload["structuredContent"]
-                if "structured_content" in payload:
-                    return payload["structured_content"]
-                return payload.get("content", payload)
+                return self._normalize_call_result(result, name)
 
         return self._run_operation(f"tool call {name!r}", invoke)
+
+    def call_tool_checked(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        expected_schema_fingerprint: str,
+    ) -> Any:
+        """Verify schema identity and invoke within one SDK client session.
+
+        This closes Manager's previous reconnect-sized check/use window. It
+        cannot make an arbitrary remote server internally immutable, but it
+        guarantees Manager does not authorize against one client session and
+        execute through a later independently discovered session.
+        """
+        if not isinstance(expected_schema_fingerprint, str) or not expected_schema_fingerprint:
+            raise MCPBoundaryError("expected MCP schema fingerprint must be non-empty text")
+
+        _, Client = self._imports()
+        target = self.target
+
+        async def invoke_checked() -> Any:
+            async with Client(target) as client:
+                remote = await self._discover_tool(client, name)
+                if remote["schema_fingerprint"] != expected_schema_fingerprint:
+                    raise MCPBoundaryError(
+                        f"MCP input schema changed before execution for {name!r}; local review is required"
+                    )
+                result = await client.call_tool(name, arguments=arguments)
+                return self._normalize_call_result(result, name)
+
+        return self._run_operation(f"schema-bound tool call {name!r}", invoke_checked)

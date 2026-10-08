@@ -273,7 +273,7 @@ class MCPStreamableHTTPConformanceTests(unittest.TestCase):
 
         self.assertEqual("failed", result["status"])
         self.assertEqual("tool_execution_failed", result["decision_reason"])
-        self.assertIn("schema changed", result["error"])
+        self.assertEqual("MCPBoundaryError", result["error"])
         self.assertEqual([], self.read_log())
 
     def test_server_restart_recovers_without_reregistering_binding(self) -> None:
@@ -340,7 +340,7 @@ class MCPStreamableHTTPConformanceTests(unittest.TestCase):
                 stub.url,
                 operation_timeout_seconds=3.0,
             )
-            with self.assertRaisesRegex(MCPBoundaryError, "[Rr]edirect"):
+            with self.assertRaisesRegex(MCPBoundaryError, "MCPError"):
                 client.list_tools()
 
     def test_custom_http_header_configuration_stays_external_to_manager_contracts(self) -> None:
