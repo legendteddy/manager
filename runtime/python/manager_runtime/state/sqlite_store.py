@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from copy import deepcopy
 
-from .base import RunStateError
+from .base import RunLeaseConflict, RunState, RunStateError
 from .sqlite_store_v2 import SQLiteRunStore as _SQLiteRunStoreV2
 
 SQLITE_STATE_SCHEMA_VERSION = 3
@@ -23,6 +24,10 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
     that function, so their writes fail at SQLite rather than silently bypassing
     leases and fencing on a database already upgraded for coordinated execution.
 
+    Plain revision CAS also refuses to mutate a run while an unexpired lease is
+    active. Code that owns a lease must use ``fenced_compare_and_swap`` so the
+    ownership token is checked in the same transaction as the state mutation.
+
     This remains a local/shared-file reference backend, not a horizontally
     scaled production datastore.
     """
@@ -36,6 +41,45 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
             deterministic=True,
         )
         return connection
+
+    def compare_and_swap(
+        self, run_id: str, expected_revision: int, state: RunState
+    ) -> RunState:
+        """Perform unfenced CAS only when no worker currently owns the run."""
+        candidate = deepcopy(state)
+        if candidate.get("run_id") != run_id:
+            raise RunStateError("replacement run_id must match the stored run")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            lease_row = connection.execute(
+                """
+                SELECT fencing_token, expires_at_epoch
+                FROM manager_run_leases WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if (
+                lease_row is not None
+                and lease_row["expires_at_epoch"] > self._db_now(connection)
+            ):
+                raise RunLeaseConflict(
+                    f"unfenced state write rejected while run lease is active: "
+                    f"{run_id}@{lease_row['fencing_token']}"
+                )
+            value = self._compare_and_swap_in_connection(
+                connection, run_id, expected_revision, candidate
+            )
+            connection.commit()
+            return value
+        except sqlite3.OperationalError as exc:
+            connection.rollback()
+            raise self._backend_error(exc) from exc
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     @staticmethod
     def _create_runtime_guard_triggers(connection: sqlite3.Connection) -> None:
