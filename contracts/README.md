@@ -15,7 +15,8 @@ These schemas encode governance and integration boundaries that are documented e
 - `reconciliation.schema.json` records authoritative-state updates and dependent propagation.
 - `trace.schema.json` records observable execution evidence without hidden chain-of-thought.
 - `eval-case.schema.json` describes synthetic behavioral eval fixtures.
-- `model-request.schema.json` defines the provider-neutral model request boundary, including optional custom tool definitions.
+- `agent-loop-policy.schema.json` defines finite model/tool/result budgets plus conservative approval and loop-repetition behavior.
+- `model-request.schema.json` defines the provider-neutral model request boundary, including optional custom tool definitions and verified tool-result continuation envelopes.
 - `model-response.schema.json` defines normalized provider response text, usage metadata, and optional tool proposals.
 - `tool-definition.schema.json` defines trusted registry-owned tool metadata, semantic version, and side-effect class.
 - `tool-proposal.schema.json` describes a proposed tool name and arguments without granting execution authority.
@@ -35,7 +36,10 @@ These schemas encode governance and integration boundaries that are documented e
 9. Consequential tool definitions must be versioned by the application so resumed approvals can detect behavior changes.
 10. Durable approval resumption must revalidate action identity, tool definition, current authorization, and target before execution.
 11. A run interrupted after durable execution intent is recorded must not be automatically retried when the external outcome is uncertain.
-12. Provider-executed tools must not bypass Manager's local policy boundary.
-13. Breaking contract changes are material architecture changes and require review against `GOVERNANCE.md` and `docs/protected-surfaces.md`.
+12. Model/tool continuation must use finite budgets and must route every new proposal through the same policy boundary.
+13. Approval is action-specific and must not be carried forward automatically to a later loop action.
+14. Only executed and policy-eligible tool results may be returned to a model continuation. Sensitive results must be withheld or safely transformed according to trusted registry metadata.
+15. Provider-executed tools must not bypass Manager's local policy boundary.
+16. Breaking contract changes are material architecture changes and require review against `GOVERNANCE.md` and `docs/protected-surfaces.md`.
 
-Schemas use JSON Schema Draft 2020-12. Repository integrity checks verify that contract files are syntactically valid JSON and expose the required schema metadata. The Python reference runtime additionally performs narrow runtime validation for the model, tool, approval, and state fields it consumes. Full cross-contract JSON Schema validation remains future work.
+Schemas use JSON Schema Draft 2020-12. Repository integrity checks verify that contract files are syntactically valid JSON and expose the required schema metadata. The Python reference runtime additionally performs narrow runtime validation for the model, tool, approval, loop, and state fields it consumes. Full cross-contract JSON Schema validation remains future work.
