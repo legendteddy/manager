@@ -1,108 +1,119 @@
-# Release readiness
+# Release and production readiness
 
-Manager separates implementation evidence from release claims. A green test suite is necessary evidence, not a declaration that the project is production-ready.
+Manager separates repository evidence from deployment claims. Green tests are necessary evidence, not a guarantee that an arbitrary environment is safe.
 
 ## Current classification
 
-**Experimental reference implementation.**
+**Production-capable reference profile.**
 
-The repository has an executable governed reference runtime, supported-Python compatibility testing, deterministic release-candidate construction, same-environment wheel and normalized-sdist reproducibility checks, candidate-specific hash-locked dependency reconstruction, deterministic SBOM/provenance output, an independent candidate verifier, and a fail-closed trusted-publishing design. No tagged or package release is implied by those controls.
+The repository now contains an integrated, deployable single-instance production profile with:
 
-## Maturity labels
+- governed deterministic routing and exact human approval boundaries;
+- provider-neutral model adapters with bounded retry/failover semantics and strict normalized-response validation;
+- structurally separated untrusted model evidence;
+- governed native and MCP tool execution with identity/policy authorization revalidated immediately before side effects;
+- durable run state with optimistic revisions, leases, fencing, an operation ledger, crash recovery, no-blind-replay semantics, and canonical persisted JSON validation;
+- hostile MCP network/stdio/resource isolation and required transport attack tests;
+- bounded telemetry, concurrency admission, queueing, checkpoint size controls, health signals, and operational diagnostics;
+- an authenticated bounded HTTP service with strict request parsing, health/readiness probes, graceful drain, and direct/external TLS support;
+- non-root containerization, read-only-root compatibility, strict environment configuration, SQLite backup/restore verification, and a vendor-neutral operator runbook;
+- supported Python 3.11 through 3.14 testing;
+- candidate-specific hash-locked dependency reconstruction, reproducible wheel and normalized sdist builds, deterministic CycloneDX SBOM, provenance/in-toto evidence, and an independent candidate verifier;
+- fail-closed OIDC/keyless trusted-publishing machinery that remains disabled until external release authority is configured.
 
-### Experimental
+This classification means the repository provides a defensible production reference profile. It does **not** mean every deployment is production-ready. Production readiness remains deployment-specific because identity provider configuration, TLS/DNS, secret management, network topology, datastore topology, backup retention, telemetry retention, SLOs, incident ownership, provider quotas and real-environment load/failure evidence live outside this repository.
 
-Behavior is implemented and tested, but compatibility, operations, deployment assumptions, and public release commitments may still evolve.
+The default SQLite profile intentionally remains **single-instance**. Horizontally scaled production deployments require another coordinated `RunStore` implementation that preserves Manager's CAS, lease, fencing, operation-ledger, recovery and migration semantics transactionally. Manager does not claim exactly-once external effects for arbitrary third-party systems.
 
-### Reference-ready
+## Required repository gates
 
-A candidate may be considered reference-ready only when the exact release commit satisfies all of the following:
+A commit is eligible for the production-capable profile only when the exact revision passes all required repository checks, including:
 
-- required repository checks pass;
-- the package builds from clean source and imports after installation;
-- Python 3.11, 3.12, 3.13, and 3.14 compatibility checks pass;
-- release notes/changelog are reviewed;
-- exact candidate artifacts and dependency wheelhouse are checksum-bound;
-- offline dependency reconstruction succeeds with `--require-hashes`;
-- wheel and normalized sdist reproducibility gates pass in the verified release environment;
-- the SBOM and provenance identities verify;
-- the independent candidate verifier passes;
-- security reporting instructions are actionable;
-- the maintainer has explicitly decided the release destination and approved the exact candidate fingerprint.
+- repository integrity and protected-surface validation;
+- Python 3.11, 3.12, 3.13 and 3.14 compatibility;
+- the full unit and deterministic behavioral-eval suites;
+- public schema and emitted-artifact conformance;
+- clean-source release dependency resolution twice;
+- byte-reproducible wheel and normalized-sdist candidate construction in the verified release environment;
+- independent candidate verification;
+- offline `--require-hashes` dependency reconstruction;
+- normal MCP stdio and Streamable HTTP conformance;
+- hostile MCP boundary, stdio and HTTP attack suites;
+- the deployment/container smoke lane, including non-root identity, read-only-root production configuration, authenticated service startup, readiness, governed API execution and clean termination.
 
-Reference-ready does not mean production-ready.
-
-### Production-ready
-
-Production readiness is deployment-specific and cannot be established by this repository alone. It requires environment-specific evidence for identity, credentials, network/TLS policy, storage, backup and recovery, observability, capacity, availability, incident response, dependency governance, side-effect semantics, and operational ownership.
-
-## Versioning policy
-
-The Python runtime remains `0.x.y` until a first stable compatibility commitment is explicitly approved. Minor `0.x` releases may contain breaking API changes. Patch releases should be backward-compatible where practical. Version bumps do not authorize publication.
-
-The package supports `>=3.11,<3.15` and CI explicitly covers Python 3.11 through 3.14.
+A branch or pull request that has not passed those gates must not inherit the production-capable classification merely because its parent did.
 
 ## Release authority
 
-Publishing is an external commitment. Approval must bind to the exact action reviewed.
-
-For the prepared PyPI path, the authorization packet binds:
+Publishing remains a distinct external commitment. The prepared PyPI path binds authorization to:
 
 - candidate workflow run ID;
-- commit SHA;
+- exact commit SHA;
 - package version;
 - candidate-manifest SHA-256;
 - changelog SHA-256;
-- required `public-safety` CI result on the exact commit;
+- successful required CI for the exact commit;
 - current `main` head identity;
 - intended destination;
 - protected `pypi-release` environment approval.
 
-Changing any bound value makes the prior approval stale.
+Changing any bound value makes prior release approval stale. The publication workflow is disabled until the corresponding GitHub/PyPI external controls are deliberately configured.
 
-## Supply-chain readiness status
+## Supply-chain status
 
-| Area | Status | Evidence / remaining boundary |
+| Area | Status | Boundary |
 | --- | --- | --- |
-| Supported Python compatibility | IMPLEMENTED | Required matrix covers 3.11-3.14 independently of the release lock. |
-| Build backend identity | IMPLEMENTED | `pyproject.toml` exact-pins the Setuptools build backend used by the release path. |
-| Release dependency reconstruction | IMPLEMENTED | Exact roots are resolved into a candidate-specific wheelhouse; every wheel is SHA-256 bound in a generated lock. |
-| Offline hash verification | VERIFIED IN CI DESIGN | Required CI reconstructs from the bundled wheelhouse with `--no-index --require-hashes`. |
-| Wheel reproducibility | VERIFIED IN CI DESIGN | Two same-run candidate builds must have identical wheel bytes. |
-| Source distribution reproducibility | IMPLEMENTED | Sdist archive metadata is normalized and repeated same-environment builds must match byte-for-byte. |
-| SBOM | IMPLEMENTED | Deterministic CycloneDX 1.6 JSON is bound to commit, artifact hashes, and dependency-lock identity. |
-| Provenance | IMPLEMENTED | Provenance v2 plus an in-toto/SLSA-shaped local statement bind commit, environment, tools, artifacts, dependency lock, and SBOM. |
-| Independent candidate verification | IMPLEMENTED | `scripts/verify_release_candidate.py` rejects file-set drift, checksum drift, identity drift, lock drift, and stale fingerprints. |
-| Release attack tests | IMPLEMENTED | Tamper, substitution, stale approval, dirty-tree, and reproducibility failure cases are covered. |
-| Keyless cryptographic attestation | PREPARED | Protected publish workflow uses GitHub keyless attestations only after release approval. External GitHub availability/configuration still applies. |
-| Trusted PyPI publishing | PREPARED, DISABLED | Workflow uses OIDC and no long-lived registry token, but a repository variable, protected environment, and PyPI trusted-publisher configuration must be explicitly set. |
-| Vulnerability visibility | IMPLEMENTED | Scheduled/manual `pip-audit` is separate from deterministic offline unit tests. |
-| Private vulnerability reporting | REQUIRES EXTERNAL SETUP | Repository settings must enable GitHub private vulnerability reporting; see `docs/private-vulnerability-reporting.md`. |
-| Tagged/package release | REQUIRES MAINTAINER DECISION | No tag, GitHub Release, or package upload is authorized by these changes. |
-| Independent security assessment | REQUIRES EXTERNAL SETUP | Repository controls have not been independently security-audited. |
-| Deployment production evidence | REQUIRES EXTERNAL SETUP | Depends on each intended environment. |
+| Python 3.11-3.14 compatibility | IMPLEMENTED | Required matrix. |
+| Build backend identity | IMPLEMENTED | Exact build-backend version in `pyproject.toml`. |
+| Dependency reconstruction | IMPLEMENTED | Candidate-specific wheelhouse and SHA-256-bound lock. |
+| Offline hash verification | REQUIRED CI | `--no-index --require-hashes` reconstruction. |
+| Wheel reproducibility | REQUIRED CI | Two clean-source builds must match byte-for-byte. |
+| Normalized sdist reproducibility | REQUIRED CI | Same-environment repeated builds must match. |
+| SBOM | IMPLEMENTED | Deterministic CycloneDX 1.6 evidence. |
+| Provenance / in-toto statement | IMPLEMENTED | Commit, environment, tools, lock, SBOM and artifact subjects are bound. |
+| Candidate verification | IMPLEMENTED | Exact file set, checksums, identity and fingerprint verification. |
+| Release attack tests | IMPLEMENTED | Tamper, substitution, stale approval, dirty source and reproducibility failures. |
+| Keyless attestation | PREPARED | Requires external GitHub release environment/availability. |
+| Trusted PyPI publishing | PREPARED, DISABLED | Requires external protected environment and PyPI trusted publisher. |
+| Vulnerability visibility | IMPLEMENTED | Scheduled/manual dependency audit. |
+| Private vulnerability reporting | EXTERNAL SETUP | Enable and verify in GitHub repository settings. |
+| Independent security assessment | EXTERNAL EVIDENCE | Recommended before high-consequence deployment. |
 
-`VERIFIED IN CI DESIGN` means the exact branch CI must still execute successfully before the claim is promoted to evidence for a specific commit. The repository must not invent a pass result before that run exists.
+## Deployment-specific production gate
+
+Before a specific deployment is called production-ready, its operator should additionally prove:
+
+1. real identity/credential configuration and revocation behavior;
+2. production TLS, DNS, proxy and egress policy;
+3. secret rotation and failure behavior;
+4. datastore topology, capacity, migration and recovery assumptions;
+5. encrypted/off-site backup retention and a restore drill;
+6. telemetry backend, alert routing, retention, SLO and error-budget policy;
+7. measured request/provider/tool/MCP capacity and overload behavior;
+8. incident ownership and rollback procedures;
+9. live-environment failure/chaos evidence appropriate to the deployment's consequence level;
+10. external-system idempotency/reconciliation controls for consequential side effects.
+
+These are deployment responsibilities, not reasons to weaken Manager's repository safeguards.
 
 ## External setup before first PyPI publication
 
-The repository-resolvable machinery is intentionally fail-closed until maintainers complete these external steps:
+1. enable and verify GitHub private vulnerability reporting;
+2. create and protect the `pypi-release` GitHub environment with appropriate independent reviewers;
+3. configure the matching PyPI trusted publisher;
+4. enable `MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED` only after those controls are reviewed;
+5. build and review a fresh candidate from the exact intended `main` commit;
+6. approve the exact candidate fingerprint only after reviewing its changelog, SBOM, provenance, dependency lock and CI evidence.
 
-1. enable GitHub private vulnerability reporting and verify the private report flow;
-2. create GitHub environment `pypi-release` and require appropriate maintainer reviewers;
-3. configure the PyPI trusted publisher for `legendteddy/manager`, workflow `release-publish.yml`, environment `pypi-release`;
-4. only after those controls are reviewed, set repository variable `MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED=true`;
-5. build a fresh candidate from the exact intended `main` commit;
-6. review its candidate-manifest SHA-256, changelog hash, SBOM, provenance, lock, CI result, and known limitations;
-7. dispatch the publish workflow with those exact values;
-8. approve the protected environment only if the displayed authorization packet matches the reviewed candidate.
-
-If `main` moves, the candidate changes, or any supplied hash changes, the workflow fails closed and a fresh candidate/approval is required.
+If `main` moves, the candidate changes, or a bound hash changes, the publication path fails closed and requires a fresh candidate/approval.
 
 ## Documentation
 
 See:
 
-- `docs/release-candidate.md` for the candidate and verification contract;
-- `docs/release-security.md` for signing, attestation, trusted publishing, and residual limits;
+- `docs/service-runtime.md` for the production HTTP boundary;
+- `docs/deployment.md` and `docs/operator-runbook.md` for deployment and recovery;
+- `docs/operations.md` for observability, capacity and SRE guidance;
+- `docs/security-identity.md` and `docs/threat-model.md` for identity/security boundaries;
+- `docs/release-candidate.md` and `docs/release-security.md` for release evidence and trusted publishing;
 - `docs/private-vulnerability-reporting.md` for the required GitHub setting.
