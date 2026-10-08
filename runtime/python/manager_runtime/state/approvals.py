@@ -141,7 +141,7 @@ def _recover_recorded_loop_execution(
         )
     result_snapshot = replacement.get("result_snapshot")
     if isinstance(result_snapshot, dict):
-        result_snapshot["status"] = "running"
+        result_snapshot["status"] = "partial"
         result_snapshot["owner_decision_required"] = False
         result_snapshot["decision_request"] = None
 
