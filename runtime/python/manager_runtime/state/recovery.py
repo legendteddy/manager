@@ -8,7 +8,13 @@ from typing import Any
 from ..agent_loop import _serialize_tool_output
 from ..tools.base import ToolRegistry, tool_definition_fingerprint, tool_request_fingerprint
 from ..tools.runtime import execute_tool_request
-from .base import RunState, RunStateError, RunStore, require_coordinated_store
+from .base import (
+    OperationConflict,
+    RunState,
+    RunStateError,
+    RunStore,
+    require_coordinated_store,
+)
 from .checkpoint_versions import migrate_agent_loop_checkpoint
 
 AGENT_LOOP_EXTENSION = "agent_loop"
@@ -282,6 +288,22 @@ def _confirmed_success(
     return value
 
 
+def _not_executed_operation_result(
+    request: dict[str, Any], resolution: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "request_id": request["request_id"],
+        "tool_name": request["tool_name"],
+        "status": "not_executed",
+        "decision_reason": "recovery_confirmed_not_executed",
+        "verification": {
+            "status": "pass",
+            "details": resolution["evidence"],
+        },
+        "recovery_resolution": deepcopy(resolution),
+    }
+
+
 def resolve_recovery_required(
     store: RunStore,
     run_id: str,
@@ -292,17 +314,12 @@ def resolve_recovery_required(
     worker_id: str | None = None,
     lease_ttl_seconds: int = 30,
 ) -> RunState:
-    """Resolve ``recovery_required`` only under a fenced lease and evidence.
+    """Resolve ``recovery_required`` under one fenced recovery transaction.
 
-    A recovery decision never executes the uncertain tool action. Resolution is
-    serialized with normal durable execution through the same backend lease so
-    competing operators, stale workers, and ordinary resume paths cannot commit
-    conflicting recovery state.
-
-    ``confirmed_succeeded`` records externally verified success and, for a
-    durable loop, returns the checkpoint to ``continuation_ready``.
-    ``confirmed_not_executed`` creates a fresh request and approval identity.
-    The old request identity is never reused for a new execution attempt.
+    Recovery never executes the uncertain action. When a durable operation row
+    exists in ``started`` or ``outcome_unknown``, Manager reconciles that row and
+    the authoritative run state in the same backend transaction. Legacy recovery
+    states that predate the operation ledger remain resolvable by fenced CAS.
     """
     _validate_resolution(run_id, resolution)
     coordinated = require_coordinated_store(store)
@@ -320,15 +337,34 @@ def resolve_recovery_required(
                 f"run is not recovery_required: {state['status']}"
             )
 
+        request, _registered = _current_pending(state, registry)
+        request_fingerprint = tool_request_fingerprint(request)
+        operation = coordinated.load_operation(request["request_id"])
+        if operation is not None and (
+            operation.run_id != run_id
+            or operation.request_fingerprint != request_fingerprint
+        ):
+            raise OperationConflict(
+                "recovery operation identity does not match the pending action"
+            )
+
         decision = resolution["decision"]
+        operation_status: str | None = None
+        operation_result: dict[str, Any] | None = None
         if decision == "confirmed_succeeded":
             value = _confirmed_success(state, registry, resolution)
+            operation_status = "confirmed"
+            operation_result = deepcopy(value["last_tool_result"])
         elif decision == "confirmed_not_executed":
             value = _fresh_approval_after_confirmed_no_effect(
                 state,
                 registry,
                 resolution,
                 current_authorization or {},
+            )
+            operation_status = "not_executed"
+            operation_result = _not_executed_operation_result(
+                request, resolution
             )
         else:
             value = _replacement(state, resolution)
@@ -344,11 +380,39 @@ def resolve_recovery_required(
                     }
                 )
 
-        return coordinated.fenced_compare_and_swap(
-            run_id,
-            state["revision"],
-            value,
-            lease=lease,
+        if operation is None or operation_status is None:
+            return coordinated.fenced_compare_and_swap(
+                run_id,
+                state["revision"],
+                value,
+                lease=lease,
+            )
+
+        if operation.status in {"started", "outcome_unknown"}:
+            return coordinated.resolve_operation_and_compare_and_swap(
+                run_id,
+                state["revision"],
+                value,
+                lease=lease,
+                operation_id=operation.operation_id,
+                request_fingerprint=request_fingerprint,
+                operation_status=operation_status,
+                operation_result=operation_result,
+            )
+
+        if operation.status == operation_status:
+            # A pre-transactional runtime may already have reconciled the
+            # operation row but crashed before changing the run row. Explicit
+            # external evidence still authorizes the fenced run-state repair.
+            return coordinated.fenced_compare_and_swap(
+                run_id,
+                state["revision"],
+                value,
+                lease=lease,
+            )
+
+        raise OperationConflict(
+            "recovery evidence conflicts with an already resolved durable operation"
         )
     finally:
         try:
