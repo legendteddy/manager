@@ -50,8 +50,11 @@ class DurableSerializationHardeningTests(unittest.TestCase):
             with sqlite3.connect(path) as connection:
                 connection.execute(
                     "UPDATE manager_runs SET state_json = replace(state_json, ?, ?) WHERE run_id = ?",
-                    ('"extensions":{}', '"extensions":{"hostile_number":NaN}'),
-                    ("run:serialization-hardening",),
+                    (
+                        '"extensions":{}',
+                        '"extensions":{"hostile_number":NaN}',
+                        "run:serialization-hardening",
+                    ),
                 )
             with self.assertRaisesRegex(RunStateError, "corrupted JSON"):
                 store.load("run:serialization-hardening")
