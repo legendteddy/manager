@@ -86,6 +86,11 @@ jobs:
         shell: bash
         run: PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
 
+      - name: Set up release Python 3.14
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
       - name: Install known-good release dependency roots
         shell: bash
         run: python3 -m pip install --disable-pip-version-check --quiet --upgrade -r runtime/python/constraints/known-good.txt
