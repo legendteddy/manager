@@ -118,8 +118,9 @@ def resume_tool_approval(
     crashed, so the run is moved to `recovery_required` instead.
 
     `success_status` defaults to `completed`. Durable multi-step workflows may
-    use `running` so an approved action can return to a larger bounded workflow
-    without changing single-action Stage 6 semantics.
+    use `running`; in that mode an executed result remains durably `executing`
+    with its pending action until the outer loop atomically checkpoints the
+    continuation. This closes the post-effect/pre-continuation crash window.
     """
     if success_status not in {"completed", "running"}:
         raise RunStateError("success_status must be completed or running")
@@ -228,8 +229,13 @@ def resume_tool_approval(
     final_state["revision"] = executing["revision"] + 1
     final_state["updated_at"] = _now()
     if result["status"] == "executed":
-        final_state["status"] = success_status
-        final_state["pending_action"] = None
+        if success_status == "running":
+            # Preserve the durable execution marker and pending action until the
+            # outer agent-loop checkpoint records the continuation-ready state.
+            final_state["status"] = "executing"
+        else:
+            final_state["status"] = "completed"
+            final_state["pending_action"] = None
     elif result["status"] == "approval_required":
         final_state["status"] = "waiting_approval"
         final_state["pending_action"]["approval"] = result["approval"]
