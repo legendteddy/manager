@@ -121,7 +121,13 @@ class ChainedSecretProvider:
             try:
                 return provider.acquire(name)
             except SecurityBoundaryError as exc:
+                if exc.code != "credential_unavailable":
+                    raise
                 last = exc
+            except Exception as exc:
+                raise SecurityBoundaryError(
+                    "credential_provider_failed", error_type=type(exc).__name__
+                ) from exc
         raise SecurityBoundaryError("credential_unavailable") from last
 
 
@@ -135,17 +141,33 @@ def _validate_secret_name(name: str) -> None:
 def _b64url_decode(value: str) -> bytes:
     if not isinstance(value, str) or not value:
         raise SecurityBoundaryError("identity_token_malformed")
+    if re.fullmatch(r"[A-Za-z0-9_-]+", value) is None:
+        raise SecurityBoundaryError("identity_token_malformed")
     padding = "=" * ((4 - len(value) % 4) % 4)
     try:
-        return base64.urlsafe_b64decode((value + padding).encode("ascii"))
-    except Exception as exc:
+        return base64.b64decode(
+            (value + padding).encode("ascii"), altchars=b"-_", validate=True
+        )
+    except (ValueError, UnicodeError) as exc:
         raise SecurityBoundaryError("identity_token_malformed") from exc
+
+
+def _strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON member")
+        result[key] = value
+    return result
 
 
 def _json_segment(value: str, *, kind: str) -> dict[str, Any]:
     try:
-        decoded = json.loads(_b64url_decode(value).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        decoded = json.loads(
+            _b64url_decode(value).decode("utf-8"),
+            object_pairs_hook=_strict_object_pairs,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise SecurityBoundaryError(f"identity_{kind}_malformed") from exc
     if not isinstance(decoded, dict):
         raise SecurityBoundaryError(f"identity_{kind}_malformed")
@@ -195,6 +217,8 @@ class JWTValidationConfig:
     clock_skew_seconds: int = 60
     require_nbf: bool = True
     require_jti: bool = False
+    max_token_chars: int = 16384
+    min_hmac_key_bytes: int = 32
 
     def __post_init__(self) -> None:
         if not self.issuers or not all(isinstance(item, str) and item for item in self.issuers):
@@ -209,6 +233,10 @@ class JWTValidationConfig:
             raise ValueError("the zero-dependency reference validator currently supports HS256 only")
         if not isinstance(self.clock_skew_seconds, int) or self.clock_skew_seconds < 0:
             raise ValueError("clock skew must be a non-negative integer")
+        if not isinstance(self.max_token_chars, int) or self.max_token_chars < 256:
+            raise ValueError("maximum token size must be at least 256 characters")
+        if not isinstance(self.min_hmac_key_bytes, int) or self.min_hmac_key_bytes < 32:
+            raise ValueError("HS256 keys must require at least 32 bytes")
 
 
 @runtime_checkable
@@ -241,7 +269,11 @@ class HS256JWTValidator:
         self.clock = clock
 
     def validate(self, token: str, *, principal_type: str = "human") -> dict[str, Any]:
-        if not isinstance(token, str) or token.count(".") != 2:
+        if (
+            not isinstance(token, str)
+            or token.count(".") != 2
+            or len(token) > self.config.max_token_chars
+        ):
             raise SecurityBoundaryError("identity_token_malformed")
         encoded_header, encoded_claims, encoded_signature = token.split(".")
         header = _json_segment(encoded_header, kind="header")
@@ -252,14 +284,32 @@ class HS256JWTValidator:
             raise SecurityBoundaryError("identity_algorithm_rejected")
         if alg == "none":
             raise SecurityBoundaryError("identity_algorithm_rejected")
+        if "crit" in header or "zip" in header or header.get("b64") is False:
+            raise SecurityBoundaryError("identity_header_extension_rejected")
 
         kid = header.get("kid")
         if kid is not None and (not isinstance(kid, str) or not kid):
             raise SecurityBoundaryError("identity_key_id_invalid")
-        secret_name = self.secret_name(kid) if callable(self.secret_name) else self.secret_name
+        try:
+            secret_name = self.secret_name(kid) if callable(self.secret_name) else self.secret_name
+        except Exception as exc:
+            raise SecurityBoundaryError(
+                "credential_selector_failed", error_type=type(exc).__name__
+            ) from exc
         _validate_secret_name(secret_name)
-        lease = self.key_provider.acquire(secret_name)
+        try:
+            lease = self.key_provider.acquire(secret_name)
+        except SecurityBoundaryError:
+            raise
+        except Exception as exc:
+            raise SecurityBoundaryError(
+                "credential_lookup_failed", error_type=type(exc).__name__
+            ) from exc
+        if not isinstance(lease, SecretLease):
+            raise SecurityBoundaryError("credential_provider_contract_invalid")
         key = lease.reveal(now=self.clock())
+        if len(key) < self.config.min_hmac_key_bytes:
+            raise SecurityBoundaryError("identity_signing_key_too_weak")
 
         signing_input = f"{encoded_header}.{encoded_claims}".encode("ascii")
         expected = hmac.new(key, signing_input, hashlib.sha256).digest()
@@ -317,8 +367,19 @@ class HS256JWTValidator:
             "token_id": token_id,
             "algorithm": alg,
         }
-        if self.revocation_checker is not None and self.revocation_checker.is_revoked(identity):
-            raise SecurityBoundaryError("identity_revoked")
+        if self.revocation_checker is not None:
+            try:
+                revoked = self.revocation_checker.is_revoked(identity)
+            except SecurityBoundaryError:
+                raise
+            except Exception as exc:
+                raise SecurityBoundaryError(
+                    "identity_revocation_check_failed", error_type=type(exc).__name__
+                ) from exc
+            if not isinstance(revoked, bool):
+                raise SecurityBoundaryError("identity_revocation_result_invalid")
+            if revoked:
+                raise SecurityBoundaryError("identity_revoked")
         return identity
 
 
@@ -439,6 +500,28 @@ def evaluate_tool_authorization(
         raise SecurityBoundaryError("security_policy_clock_skew_invalid")
     current = time.time() if now is None else float(now)
     identity = _validated_identity(context.get("principal"), now=current, skew=float(skew))
+
+    principal_revalidator = context.get("principal_revalidator")
+    if principal_revalidator is not None:
+        if not callable(principal_revalidator):
+            raise SecurityBoundaryError("security_principal_revalidator_invalid")
+        try:
+            principal_current = principal_revalidator(dict(identity))
+        except SecurityBoundaryError:
+            raise
+        except Exception as exc:
+            raise SecurityBoundaryError(
+                "security_principal_revalidation_failed",
+                error_type=type(exc).__name__,
+            ) from exc
+        if not isinstance(principal_current, bool):
+            raise SecurityBoundaryError("security_principal_revalidation_result_invalid")
+        if not principal_current:
+            return {
+                "allowed": False,
+                "reason": "principal_not_current",
+                "policy_revision": revision,
+            }
 
     allowed_principal_types = policy.get("allowed_principal_types")
     if allowed_principal_types is not None:
