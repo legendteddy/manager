@@ -16,6 +16,7 @@ ToolRequest: name + arguments + target
 trusted ToolRegistry
   - side-effect class
   - input schema
+  - tool version
   - verification requirement
         ↓
 deterministic policy
@@ -41,7 +42,7 @@ The Python reference runtime implements a conservative policy for these classes.
 
 ## Authorization context
 
-Trusted authorization is supplied to the runtime separately from the proposal. The Stage 5 reference context supports:
+Trusted authorization is supplied to the runtime separately from the proposal. The reference context supports:
 
 - `scope_authorized`: the embedding application confirms the requested tool use is within the task's granted scope;
 - `human_intent_confirmed`: explicit human intent exists for an external commitment;
@@ -60,28 +61,39 @@ For `sensitive_destructive` tools, the runtime binds approval to a stable finger
 
 If those change after approval, the approval is stale and execution is blocked until a fresh approval is issued.
 
+Stage 6 also fingerprints policy-relevant tool metadata. Consequential tools must declare an application-owned `version`; changing the version or other trusted definition fields invalidates a checkpointed approval before resumption.
+
+## Durable approval interruption
+
+Stage 6 adds a durable checkpoint layer for approval waits. The Python reference implementation can persist a pending approval to SQLite, load it in a later process, record a human approval or rejection, revalidate current authorization and tool identity, and resume only when the reviewed action remains current.
+
+Before a resumed side effect executes, Manager persists an `executing` state. If a later process finds that state still present, it changes the run to `recovery_required` instead of automatically retrying the action because the real external effect may already have occurred.
+
+See [`run-state.md`](run-state.md).
+
 ## Verification
 
 Tools marked `requires_verification` do not receive a successful verified result merely because execution returned. The adapter must provide a verification method and that verification must pass. A failed or missing verification produces a failed/unverified outcome rather than an invented success claim.
 
 ## Model-provider integration
 
-Stage 5 exposes only **custom function proposals** to model providers. The model may request a function call; Manager's application layer owns whether that request executes.
+The reference path exposes only **custom function proposals** to model providers. The model may request a function call; Manager's application layer owns whether that request executes.
 
-Provider-executed built-in tools and provider-managed MCP tools are intentionally outside the Stage 5 reference path because they can execute inside the provider before Manager's local tool policy evaluates the request. Future support must preserve the same policy and approval boundary.
+Provider-executed built-in tools and provider-managed MCP tools remain outside the reference path because they can execute inside the provider before Manager's local tool policy evaluates the request. Future support must preserve the same policy and approval boundary.
 
-## Stage 5 limits
+## Current limits
 
 The reference runtime does not yet provide:
 
-- durable approval storage;
-- distributed tool registries;
+- distributed tool registries or distributed locking;
 - sandbox/process isolation;
 - transaction rollback orchestration;
+- exactly-once external side effects;
 - provider failover;
 - parallel tool execution;
 - automatic retry of side effects;
 - a model continuation loop after tool results;
+- durable provider conversation state;
 - production credentials or production tools.
 
 All examples and tests use synthetic adapters.
