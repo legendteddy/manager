@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .engine import run as run_control_plane
-from .providers.base import ModelAdapter, ModelPayload, validate_model_response
+from .providers.base import ModelAdapter, ModelPayload, validate_model_request, validate_model_response
 from .tools.base import CONSEQUENTIAL_CLASSES, ToolRegistry, tool_request_fingerprint
 from .tools.runtime import execute_tool_request
 
@@ -29,7 +29,6 @@ def _untrusted_evidence(task_input: dict[str, Any]) -> list[str]:
         raise ValueError("untrusted_content must be a list when supplied")
     if len(raw) > _MAX_UNTRUSTED_EVIDENCE_ITEMS:
         raise ValueError("untrusted_content exceeds the model evidence item limit")
-
     evidence: list[str] = []
     for item in raw:
         if not isinstance(item, str) or not item.strip():
@@ -40,47 +39,27 @@ def _untrusted_evidence(task_input: dict[str, Any]) -> list[str]:
     return evidence
 
 
-def _model_not_called(
-    output: dict[str, Any], adapter: ModelAdapter, reason: str
-) -> dict[str, Any]:
-    output["model"] = {
-        "status": "not_called",
-        "provider": adapter.provider,
-        "reason": reason,
-    }
+def _model_not_called(output: dict[str, Any], adapter: ModelAdapter, reason: str) -> dict[str, Any]:
+    output["model"] = {"status": "not_called", "provider": adapter.provider, "reason": reason}
     return output
 
 
-def _model_boundary_failed(
-    output: dict[str, Any],
-    adapter: ModelAdapter,
-    error: Exception,
-) -> dict[str, Any]:
-    """Convert provider/normalization failures into a governed failed result.
-
-    Exception messages are intentionally excluded because SDK, transport, or
-    custom-adapter errors may contain request data, credentials, or remote text.
-    """
+def _model_boundary_failed(output: dict[str, Any], adapter: ModelAdapter, error: Exception) -> dict[str, Any]:
     trace = output["trace"]
     trace["status"] = "failed"
-    trace["events"].append(
-        {
-            "event_type": "model",
-            "status": "failed",
-            "reference": adapter.provider,
-            "summary": "Model provider request or normalized response validation failed.",
-        }
-    )
+    trace["events"].append({
+        "event_type": "model",
+        "status": "failed",
+        "reference": adapter.provider,
+        "summary": "Model provider request or normalized response validation failed.",
+    })
     capability = f"model-provider:{adapter.provider}"
     if capability not in trace.setdefault("capabilities", []):
         trace["capabilities"].append(capability)
-
     result = output["result"]
     result["status"] = "failed"
     result["finding"] = "Model generation failed before a usable response was produced."
-    result.setdefault("uncertainties", []).append(
-        f"Model provider boundary failed ({type(error).__name__})."
-    )
+    result.setdefault("uncertainties", []).append(f"Model provider boundary failed ({type(error).__name__}).")
     result["owner_decision_required"] = False
     result["decision_request"] = None
     output["model"] = {
@@ -92,28 +71,21 @@ def _model_boundary_failed(
     return output
 
 
-def _apply_model_response_status(
-    output: dict[str, Any], response: dict[str, Any]
-) -> None:
+def _apply_model_response_status(output: dict[str, Any], response: dict[str, Any]) -> None:
     result = output["result"]
     status = response["status"]
     text = response["output_text"]
-
     if status == "completed":
         result["finding"] = text
         return
-
     if status == "failed":
         output["trace"]["status"] = "failed"
         result["status"] = "failed"
         result["finding"] = text or "Model generation failed without a usable result."
-        result.setdefault("uncertainties", []).append(
-            "The model provider reported a failed generation."
-        )
+        result.setdefault("uncertainties", []).append("The model provider reported a failed generation.")
         result["owner_decision_required"] = False
         result["decision_request"] = None
         return
-
     output["trace"]["status"] = "blocked"
     result["status"] = "partial"
     result["finding"] = text
@@ -133,35 +105,17 @@ def run_with_model(
     allow_non_public_input: bool = False,
     tool_definitions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run deterministic governance first, then a bounded model call if eligible.
-
-    Only the direct workflow is model-backed in this reference stage. Material
-    or blocked work never reaches the provider. Non-public inputs are withheld
-    by default unless the embedding application explicitly permits them.
-
-    Tool definitions are proposal surfaces only. A provider may return tool
-    proposals, but this function does not execute them. Untrusted external
-    content is carried separately in a Manager-owned evidence extension rather
-    than being blended into the task input or model instructions.
-    """
+    """Run governance before a bounded model call, keeping evidence structurally untrusted."""
     output = run_control_plane(task_input)
     trace = output["trace"]
     task = task_input["task"]
     classification = task["classification"]
-
     if trace["status"] != "completed":
         return _model_not_called(output, adapter, "control_plane_blocked")
-
     if trace["workflow"] != "direct":
         return _model_not_called(output, adapter, "workflow_not_model_backed")
-
-    if (
-        classification.get("sensitivity", "unknown") != "public"
-        and not allow_non_public_input
-    ):
-        return _model_not_called(
-            output, adapter, "non_public_input_requires_explicit_opt_in"
-        )
+    if classification.get("sensitivity", "unknown") != "public" and not allow_non_public_input:
+        return _model_not_called(output, adapter, "non_public_input_requires_explicit_opt_in")
 
     model_input = task_input.get("model_input")
     if model_input is None:
@@ -169,7 +123,6 @@ def run_with_model(
     if not isinstance(model_input, str) or not model_input.strip():
         raise ValueError("model_input must be non-empty text when supplied")
     evidence = _untrusted_evidence(task_input)
-
     request: ModelPayload = {
         "request_id": f"model-request:{task['task_id']}",
         "model": model,
@@ -179,9 +132,7 @@ def run_with_model(
     }
     if evidence:
         request["extensions"] = {
-            "manager_untrusted_evidence": [
-                {"trust": "untrusted", "content": item} for item in evidence
-            ]
+            "manager_untrusted_evidence": [{"trust": "untrusted", "content": item} for item in evidence]
         }
     if max_output_tokens is not None:
         request["max_output_tokens"] = max_output_tokens
@@ -189,42 +140,34 @@ def run_with_model(
         request["tools"] = tool_definitions
 
     try:
+        validate_model_request(request)
         response = adapter.generate(request)
         validate_model_response(response, expected_provider=adapter.provider)
     except Exception as exc:
         return _model_boundary_failed(output, adapter, exc)
 
-    trace["events"].append(
-        {
-            "event_type": "model",
-            "status": response["status"],
-            "reference": response.get("response_id") or response["provider"],
-            "summary": "Bounded model generation completed through a provider adapter.",
-        }
-    )
+    trace["events"].append({
+        "event_type": "model",
+        "status": response["status"],
+        "reference": response.get("response_id") or response["provider"],
+        "summary": "Bounded model generation completed through a provider adapter.",
+    })
     capability = f"model-provider:{response['provider']}"
     if capability not in trace["capabilities"]:
         trace["capabilities"].append(capability)
-
     result = output["result"]
-    result["material_evidence"] = [
-        {
-            "type": "model_response",
-            "provider": response["provider"],
-            "model": response["model"],
-            "response_id": response.get("response_id"),
-        }
-    ]
+    result["material_evidence"] = [{
+        "type": "model_response",
+        "provider": response["provider"],
+        "model": response["model"],
+        "response_id": response.get("response_id"),
+    }]
     output["model_response"] = response
     _apply_model_response_status(output, response)
     return output
 
 
-def _one_shot_block(
-    output: dict[str, Any],
-    requests: list[dict[str, Any]],
-    reason: str,
-) -> dict[str, Any]:
+def _one_shot_block(output: dict[str, Any], requests: list[dict[str, Any]], reason: str) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     trace = output["trace"]
     for request in requests:
@@ -240,20 +183,16 @@ def _one_shot_block(
             "redacted": False,
         }
         results.append(result)
-        trace["events"].append(
-            {
-                "event_type": "tool",
-                "status": "blocked",
-                "reference": request["request_id"],
-                "summary": f"One-shot tool batch was blocked before execution: {reason}.",
-            }
-        )
+        trace["events"].append({
+            "event_type": "tool",
+            "status": "blocked",
+            "reference": request["request_id"],
+            "summary": f"One-shot tool batch was blocked before execution: {reason}.",
+        })
     output["tool_results"] = results
     trace["status"] = "blocked"
     output["result"]["status"] = "blocked"
-    output["result"]["uncertainties"] = [
-        f"Tool proposal batch was blocked before execution: {reason}."
-    ]
+    output["result"]["uncertainties"] = [f"Tool proposal batch was blocked before execution: {reason}."]
     return output
 
 
@@ -268,17 +207,6 @@ def run_with_model_and_tools(
     max_output_tokens: int | None = None,
     allow_non_public_input: bool = False,
 ) -> dict[str, Any]:
-    """Let a model propose tools, then govern each proposal locally.
-
-    Stage 5 executes proposals once and records their results. It intentionally
-    does not send tool outputs back to the model for a continuation turn.
-
-    The complete proposal batch is preflighted before any execution. Exact
-    duplicate actions are rejected and any batch containing a consequential
-    action must be serialized through a later bounded/durable workflow. Approval
-    objects supplied in reusable authorization context are discarded because a
-    model proposal is not allowed to inherit prior approval authority.
-    """
     definitions = registry.model_definitions(allowed_tools)
     output = run_with_model(
         task_input,
@@ -291,7 +219,6 @@ def run_with_model_and_tools(
     response = output.get("model_response")
     if not isinstance(response, dict):
         return output
-
     proposals = response.get("tool_proposals") or []
     if not proposals:
         output["tool_results"] = []
@@ -301,7 +228,6 @@ def run_with_model_and_tools(
     authorization_contexts = authorization_contexts or {}
     task = task_input["task"]
     trace = output["trace"]
-
     prepared: list[dict[str, Any]] = []
     fingerprints: set[str] = set()
     consequential = False
@@ -318,28 +244,14 @@ def run_with_model_and_tools(
         }
         fingerprint = tool_request_fingerprint(request)
         if fingerprint in fingerprints:
-            return _one_shot_block(
-                output,
-                prepared + [request],
-                "repeated_tool_proposal",
-            )
+            return _one_shot_block(output, prepared + [request], "repeated_tool_proposal")
         fingerprints.add(fingerprint)
         prepared.append(request)
-
         registered = registry.get(tool_name)
-        if (
-            tool_name in allowed
-            and registered is not None
-            and registered.definition["side_effect_class"] in CONSEQUENTIAL_CLASSES
-        ):
+        if tool_name in allowed and registered is not None and registered.definition["side_effect_class"] in CONSEQUENTIAL_CLASSES:
             consequential = True
-
     if len(prepared) > 1 and consequential:
-        return _one_shot_block(
-            output,
-            prepared,
-            "consequential_multi_tool_batch_requires_serialization",
-        )
+        return _one_shot_block(output, prepared, "consequential_multi_tool_batch_requires_serialization")
 
     results: list[dict[str, Any]] = []
     for request in prepared:
@@ -360,22 +272,16 @@ def run_with_model_and_tools(
             context = dict(authorization_contexts.get(tool_name, {}))
             context.pop("approval", None)
             registered = registry.get(tool_name)
-            if registered is not None and registered.definition["side_effect_class"] in {
-                "analysis",
-                "read",
-            }:
+            if registered is not None and registered.definition["side_effect_class"] in {"analysis", "read"}:
                 context.setdefault("scope_authorized", True)
             result = execute_tool_request(task, request, registry, context)
-
         results.append(result)
-        trace["events"].append(
-            {
-                "event_type": "tool",
-                "status": result["status"],
-                "reference": request["request_id"],
-                "summary": f"Governed tool request for {tool_name} ended with status {result['status']}.",
-            }
-        )
+        trace["events"].append({
+            "event_type": "tool",
+            "status": result["status"],
+            "reference": request["request_id"],
+            "summary": f"Governed tool request for {tool_name} ended with status {result['status']}.",
+        })
         approval_ref = result.get("approval_ref")
         if approval_ref:
             trace.setdefault("approval_refs", [])
@@ -385,7 +291,6 @@ def run_with_model_and_tools(
     output["tool_results"] = results
     statuses = {item["status"] for item in results}
     result_envelope = output["result"]
-
     if "approval_required" in statuses:
         trace["status"] = "blocked"
         result_envelope["status"] = "blocked"
@@ -399,5 +304,4 @@ def run_with_model_and_tools(
         trace["status"] = "blocked"
         result_envelope["status"] = "blocked"
         result_envelope["uncertainties"] = ["At least one tool proposal was outside authorized execution scope."]
-
     return output

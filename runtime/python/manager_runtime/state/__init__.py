@@ -19,7 +19,7 @@ from .checkpoint_versions import (
     migrate_agent_loop_checkpoint,
 )
 from .recovery import resolve_recovery_required
-from .sqlite_store import SQLITE_STATE_SCHEMA_VERSION, SQLiteRunStore
+from .sqlite_hardened import SQLITE_STATE_SCHEMA_VERSION, SQLiteRunStore
 from .transitions import validate_run_state_shape, validate_run_state_transition
 
 __all__ = [

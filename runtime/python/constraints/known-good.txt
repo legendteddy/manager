@@ -1,9 +1,13 @@
-# Known-good direct dependency and build-tool baseline for Manager release-candidate verification.
+# Exact release-candidate root versions.
 #
-# This is intentionally a direct-version baseline, not a complete transitive lock.
-# Compatibility CI continues to exercise the allowed ranges declared in pyproject.toml.
-# A future public release may add a fully hashed transitive lock if the release process
-# requires stronger offline/reproducible dependency reconstruction.
+# Compatibility CI still exercises the ranges declared in pyproject.toml on every supported
+# Python line. These exact roots are used only by the release-candidate lane. The candidate
+# workflow resolves their platform-specific transitive wheel closure, records every wheel
+# SHA-256 in dependencies.lock.json and requirements.lock, and proves --require-hashes
+# offline reconstruction from the bundled wheelhouse.
+#
+# This source file intentionally does not pretend to be a cross-platform universal lock.
+# The candidate-specific generated lock is authoritative for the exact release build platform.
 
 pip==26.2.1
 setuptools==84.0.0
