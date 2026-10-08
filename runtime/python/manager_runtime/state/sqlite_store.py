@@ -54,6 +54,13 @@ class SQLiteRunStore:
         validate_run_state_shape(value)
         return value
 
+    @staticmethod
+    def _validate_revision_consistency(row_revision: int, state: RunState) -> None:
+        if state["revision"] != row_revision:
+            raise RunStateError(
+                "persisted run revision metadata does not match serialized state"
+            )
+
     def create(self, state: RunState) -> RunState:
         candidate = deepcopy(state)
         if candidate.get("revision") != 1:
@@ -73,11 +80,13 @@ class SQLiteRunStore:
     def load(self, run_id: str) -> RunState | None:
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT state_json FROM manager_runs WHERE run_id = ?", (run_id,)
+                "SELECT revision, state_json FROM manager_runs WHERE run_id = ?", (run_id,)
             ).fetchone()
         if row is None:
             return None
-        return self._decoded(row["state_json"])
+        state = self._decoded(row["state_json"])
+        self._validate_revision_consistency(row["revision"], state)
+        return state
 
     def compare_and_swap(
         self, run_id: str, expected_revision: int, state: RunState
@@ -101,6 +110,11 @@ class SQLiteRunStore:
                     f"run revision changed before update: {run_id}@{expected_revision}"
                 )
             previous = self._decoded(row["state_json"])
+            try:
+                self._validate_revision_consistency(row["revision"], previous)
+            except RunStateError:
+                connection.rollback()
+                raise
             validate_run_state_transition(previous, candidate)
             cursor = connection.execute(
                 """
