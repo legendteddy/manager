@@ -6,6 +6,7 @@
   "required": ["name", "description", "side_effect_class", "input_schema", "requires_verification"],
   "properties": {
     "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "version": {"type": "string", "minLength": 1, "description": "Application-owned semantic version or revision for the registered tool behavior."},
     "description": {"type": "string", "minLength": 1},
     "side_effect_class": {
       "enum": ["analysis", "read", "reversible_write", "external_commitment", "sensitive_destructive"]
