@@ -28,6 +28,79 @@ def _model_not_called(
     return output
 
 
+def _model_boundary_failed(
+    output: dict[str, Any],
+    adapter: ModelAdapter,
+    error: Exception,
+) -> dict[str, Any]:
+    """Convert provider/normalization failures into a governed failed result.
+
+    Exception messages are intentionally excluded because SDK, transport, or
+    custom-adapter errors may contain request data, credentials, or remote text.
+    """
+    trace = output["trace"]
+    trace["status"] = "failed"
+    trace["events"].append(
+        {
+            "event_type": "model",
+            "status": "failed",
+            "reference": adapter.provider,
+            "summary": "Model provider request or normalized response validation failed.",
+        }
+    )
+    capability = f"model-provider:{adapter.provider}"
+    if capability not in trace.setdefault("capabilities", []):
+        trace["capabilities"].append(capability)
+
+    result = output["result"]
+    result["status"] = "failed"
+    result["finding"] = "Model generation failed before a usable response was produced."
+    result.setdefault("uncertainties", []).append(
+        f"Model provider boundary failed ({type(error).__name__})."
+    )
+    result["owner_decision_required"] = False
+    result["decision_request"] = None
+    output["model"] = {
+        "status": "failed",
+        "provider": adapter.provider,
+        "reason": "provider_boundary_failure",
+        "error_type": type(error).__name__,
+    }
+    return output
+
+
+def _apply_model_response_status(
+    output: dict[str, Any], response: dict[str, Any]
+) -> None:
+    result = output["result"]
+    status = response["status"]
+    text = response["output_text"]
+
+    if status == "completed":
+        result["finding"] = text
+        return
+
+    if status == "failed":
+        output["trace"]["status"] = "failed"
+        result["status"] = "failed"
+        result["finding"] = text or "Model generation failed without a usable result."
+        result.setdefault("uncertainties", []).append(
+            "The model provider reported a failed generation."
+        )
+        result["owner_decision_required"] = False
+        result["decision_request"] = None
+        return
+
+    output["trace"]["status"] = "blocked"
+    result["status"] = "partial"
+    result["finding"] = text
+    result.setdefault("uncertainties", []).append(
+        "The model provider returned an incomplete generation; no tool proposal was executed."
+    )
+    result["owner_decision_required"] = False
+    result["decision_request"] = None
+
+
 def run_with_model(
     task_input: dict[str, Any],
     adapter: ModelAdapter,
@@ -83,8 +156,11 @@ def run_with_model(
     if tool_definitions:
         request["tools"] = tool_definitions
 
-    response = adapter.generate(request)
-    validate_model_response(response)
+    try:
+        response = adapter.generate(request)
+        validate_model_response(response, expected_provider=adapter.provider)
+    except Exception as exc:
+        return _model_boundary_failed(output, adapter, exc)
 
     trace["events"].append(
         {
@@ -99,7 +175,6 @@ def run_with_model(
         trace["capabilities"].append(capability)
 
     result = output["result"]
-    result["finding"] = response["output_text"]
     result["material_evidence"] = [
         {
             "type": "model_response",
@@ -109,6 +184,7 @@ def run_with_model(
         }
     ]
     output["model_response"] = response
+    _apply_model_response_status(output, response)
     return output
 
 
