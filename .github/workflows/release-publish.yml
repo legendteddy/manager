@@ -1,0 +1,210 @@
+name: Publish approved Python release
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: "Workflow run ID that produced the verified release-candidate artifact"
+        required: true
+        type: string
+      commit_sha:
+        description: "Exact approved release commit SHA"
+        required: true
+        type: string
+      version:
+        description: "Exact approved package version"
+        required: true
+        type: string
+      candidate_manifest_sha256:
+        description: "SHA-256 of candidate-manifest.json reviewed by the maintainer"
+        required: true
+        type: string
+      changelog_sha256:
+        description: "SHA-256 of CHANGELOG.md at the approved commit"
+        required: true
+        type: string
+      destination:
+        description: "Approved publication destination"
+        required: true
+        default: "pypi"
+        type: choice
+        options:
+          - pypi
+
+permissions:
+  contents: read
+
+jobs:
+  verify-approved-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - name: Check out exact approved commit and current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags origin "${{ inputs.commit_sha }}" main
+          git checkout --detach "${{ inputs.commit_sha }}"
+          test "$(git rev-parse HEAD)" = "${{ inputs.commit_sha }}"
+          test "$(git rev-parse origin/main)" = "${{ inputs.commit_sha }}" || {
+            echo "approved release commit is no longer the current main head" >&2
+            exit 1
+          }
+
+      - name: Set up verification Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Download exact candidate artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: manager-release-candidate-${{ inputs.commit_sha }}
+          path: release-candidate
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify candidate, version, changelog, and approval fingerprint
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ inputs.destination }}" = "pypi"
+          python scripts/verify_release_candidate.py release-candidate \
+            --expected-commit "${{ inputs.commit_sha }}" \
+            --expected-version "${{ inputs.version }}" \
+            --expected-manifest-sha256 "${{ inputs.candidate_manifest_sha256 }}" \
+            --pyproject runtime/python/pyproject.toml \
+            --changelog CHANGELOG.md \
+            --expected-changelog-sha256 "${{ inputs.changelog_sha256 }}"
+
+      - name: Require successful required CI on exact commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          conclusions="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.name == "public-safety") | .conclusion')"
+          test "${conclusions}" = "success" || {
+            echo "required public-safety check is not exactly success for ${RELEASE_SHA}: ${conclusions:-missing}" >&2
+            exit 1
+          }
+
+      - name: Record authorization evidence for protected-environment review
+        shell: bash
+        run: |
+          {
+            echo '### Release authorization packet'
+            echo ''
+            echo "- commit: \`${{ inputs.commit_sha }}\`"
+            echo "- version: \`${{ inputs.version }}\`"
+            echo "- candidate manifest SHA-256: \`${{ inputs.candidate_manifest_sha256 }}\`"
+            echo "- changelog SHA-256: \`${{ inputs.changelog_sha256 }}\`"
+            echo "- destination: \`${{ inputs.destination }}\`"
+            echo '- required CI: `public-safety = success` on the exact commit'
+            echo '- next boundary: protected `pypi-release` environment approval'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+  publishing-disabled:
+    needs: verify-approved-candidate
+    if: ${{ vars.MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED != 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Refuse publication until repository setup is explicitly enabled
+        shell: bash
+        run: |
+          echo "Trusted publishing is intentionally disabled. Configure the protected pypi-release environment, PyPI trusted publisher, and MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED=true before attempting publication." >&2
+          exit 1
+
+  publish:
+    needs: verify-approved-candidate
+    if: ${{ vars.MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: pypi-release
+      url: https://pypi.org/project/manager-reference-runtime/
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Re-check exact release source after environment approval
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags origin "${{ inputs.commit_sha }}" main
+          git checkout --detach "${{ inputs.commit_sha }}"
+          test "$(git rev-parse HEAD)" = "${{ inputs.commit_sha }}"
+          test "$(git rev-parse origin/main)" = "${{ inputs.commit_sha }}" || {
+            echo "main moved after release review; prior approval is stale" >&2
+            exit 1
+          }
+
+      - name: Set up verification Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Re-download exact approved candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: manager-release-candidate-${{ inputs.commit_sha }}
+          path: release-candidate
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Re-verify approval binding immediately before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/verify_release_candidate.py release-candidate \
+            --expected-commit "${{ inputs.commit_sha }}" \
+            --expected-version "${{ inputs.version }}" \
+            --expected-manifest-sha256 "${{ inputs.candidate_manifest_sha256 }}" \
+            --pyproject runtime/python/pyproject.toml \
+            --changelog CHANGELOG.md \
+            --expected-changelog-sha256 "${{ inputs.changelog_sha256 }}"
+
+      - name: Re-check required CI immediately before publication
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ inputs.commit_sha }}
+        run: |
+          set -euo pipefail
+          conclusions="$(gh api \
+            -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/check-runs?per_page=100" \
+            --jq '.check_runs[] | select(.name == "public-safety") | .conclusion')"
+          test "${conclusions}" = "success"
+
+      - name: Create keyless GitHub build provenance attestation for package artifacts
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-candidate/artifacts/*
+
+      - name: Create keyless attestation for candidate approval manifest
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release-candidate/candidate-manifest.json
+
+      - name: Publish package with PyPI trusted publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: release-candidate/artifacts/

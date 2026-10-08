@@ -1,118 +1,108 @@
 # Release readiness
 
-Manager separates implementation evidence from release claims. A green test suite is necessary evidence, not a declaration that the project is ready for production use.
+Manager separates implementation evidence from release claims. A green test suite is necessary evidence, not a declaration that the project is production-ready.
 
 ## Current classification
 
 **Experimental reference implementation.**
 
-The repository has an executable reference control plane, deterministic policy tests, schema conformance, durable-state tests, synthetic MCP transport conformance, supported-Python matrix testing, and release-candidate construction with a reproducible wheel plus checksummed source distribution. It has not published a tagged software release and does not claim production readiness.
+The repository has an executable governed reference runtime, supported-Python compatibility testing, deterministic release-candidate construction, same-environment wheel and normalized-sdist reproducibility checks, candidate-specific hash-locked dependency reconstruction, deterministic SBOM/provenance output, an independent candidate verifier, and a fail-closed trusted-publishing design. No tagged or package release is implied by those controls.
 
 ## Maturity labels
 
 ### Experimental
 
-Use this label when behavior is implemented and tested but compatibility, operational support, release reproducibility, and deployment assumptions are still evolving.
+Behavior is implemented and tested, but compatibility, operations, deployment assumptions, and public release commitments may still evolve.
 
 ### Reference-ready
 
-A reference runtime may be described as reference-ready only when all of the following are true for the release candidate:
+A candidate may be considered reference-ready only when the exact release commit satisfies all of the following:
 
-- required repository checks pass on the exact release commit;
-- the distribution package builds from clean source and imports after installation;
-- supported Python versions are explicitly tested;
-- public API and compatibility policy are documented;
-- release notes or changelog entries identify user-visible changes;
-- dependency and build-tool baselines are reproducible enough to investigate regressions;
-- package metadata and license files are complete;
+- required repository checks pass;
+- the package builds from clean source and imports after installation;
+- Python 3.11, 3.12, 3.13, and 3.14 compatibility checks pass;
+- release notes/changelog are reviewed;
+- exact candidate artifacts and dependency wheelhouse are checksum-bound;
+- offline dependency reconstruction succeeds with `--require-hashes`;
+- wheel and normalized sdist reproducibility gates pass in the verified release environment;
+- the SBOM and provenance identities verify;
+- the independent candidate verifier passes;
 - security reporting instructions are actionable;
-- release artifacts have an identified provenance path;
-- no documentation claims exceed the available evidence.
+- the maintainer has explicitly decided the release destination and approved the exact candidate fingerprint.
 
-Reference-ready means suitable as a documented reference implementation. It does not mean suitable for a production deployment.
+Reference-ready does not mean production-ready.
 
 ### Production-ready
 
-Production readiness is deployment-specific and cannot be established by this repository alone. It requires evidence for the intended environment, including threat model fit, credentials and identity, network and TLS policy, observability, backup and recovery, operational ownership, dependency governance, incident response, capacity, availability, and external side-effect semantics.
-
-Manager must not use `production-ready` as a repository-wide label without evidence for those conditions.
+Production readiness is deployment-specific and cannot be established by this repository alone. It requires environment-specific evidence for identity, credentials, network/TLS policy, storage, backup and recovery, observability, capacity, availability, incident response, dependency governance, side-effect semantics, and operational ownership.
 
 ## Versioning policy
 
-The Python reference runtime currently uses a `0.x.y` version. Until a first stable compatibility commitment is explicitly approved:
+The Python runtime remains `0.x.y` until a first stable compatibility commitment is explicitly approved. Minor `0.x` releases may contain breaking API changes. Patch releases should be backward-compatible where practical. Version bumps do not authorize publication.
 
-- minor `0.x` releases may contain breaking public API changes;
-- patch `0.x.y` releases should be backward-compatible bug fixes, test improvements, documentation corrections, or packaging changes where practical;
-- breaking contract or checkpoint changes require explicit migration notes and versioned schemas or migration code;
-- a version number in `pyproject.toml` is not itself evidence that a public release exists;
-- a version bump does not authorize publishing.
-
-The convenience Python surface exported through `manager_runtime.__all__` is the intended package-facing API, but it remains pre-stable until a tagged release defines a compatibility baseline. Internal modules are not compatibility commitments merely because they are importable.
-
-The current package supports the stable CPython lines explicitly exercised in CI: 3.11, 3.12, 3.13, and 3.14. Package metadata is bounded to `>=3.11,<3.15`; prerelease or future Python lines are not supported merely because they happen to import successfully.
+The package supports `>=3.11,<3.15` and CI explicitly covers Python 3.11 through 3.14.
 
 ## Release authority
 
-Publishing a package, tag, GitHub Release, container, signed artifact, or other externally distributed release is an external commitment. It requires explicit maintainer intent and verification of the exact release target.
+Publishing is an external commitment. Approval must bind to the exact action reviewed.
 
-A release candidate should bind at least:
+For the prepared PyPI path, the authorization packet binds:
 
+- candidate workflow run ID;
 - commit SHA;
 - package version;
-- changelog/release notes;
-- required CI result;
-- artifact identity and checksum;
-- build environment or reproducible build instructions;
-- known limitations and security-reporting path.
+- candidate-manifest SHA-256;
+- changelog SHA-256;
+- required `public-safety` CI result on the exact commit;
+- current `main` head identity;
+- intended destination;
+- protected `pypi-release` environment approval.
 
-If the commit, version, artifact, or material release parameters change, prior release approval is stale.
+Changing any bound value makes the prior approval stale.
 
-## Stage 14 audit
+## Supply-chain readiness status
 
-Status on the Stage 14 baseline:
-
-| Area | Status | Evidence / gap |
+| Area | Status | Evidence / remaining boundary |
 | --- | --- | --- |
-| Protected default branch | Pass | Active ruleset requires pull requests and the `public-safety` status check; deletion and non-fast-forward updates are blocked. |
-| CI permissions | Pass | Required repository workflow requests `contents: read` only. |
-| Unit, eval, schema and MCP transport gates | Pass | Required workflow covers deterministic runtime tests, evals, schema conformance, stdio MCP, and Streamable HTTP MCP. |
-| Public/private leakage controls | Pass with limits | Repository integrity checks scan tracked content and commit-email metadata for high-confidence patterns; this is not a complete secret scanner. |
-| Threat model | Pass | `docs/threat-model.md` records trust boundaries, threats, mitigations, and residual risks. |
-| API/compatibility policy | Pass | This document defines the pre-stable Python API and versioning boundary. |
-| Package metadata | Pass | The reference package uses SPDX license metadata, includes its license text and README, and exposes project URLs. |
-| Supported Python matrix | Pass after Stage 14 | Required CI exercises Python 3.11, 3.12, 3.13, and 3.14, including wheel build/install/import on each line. |
-| Dependency compatibility lane | Pass after Stage 14 | The supported-Python matrix continues to exercise the package's declared compatible ranges instead of only one frozen environment. |
-| Known-good direct baseline | Pass with limits after Stage 14 | `runtime/python/constraints/known-good.txt` pins direct build, conformance, model-adapter, and MCP dependencies. It is not a complete hashed transitive lock. |
-| Wheel reproducibility | Pass after Stage 14 | Required CI builds the wheel twice from the same commit under the same verified build inputs and requires matching SHA-256 hashes. |
-| Source distribution identity | Pass with explicit limit after Stage 14 | The sdist is built and checksummed, but the current Setuptools `.tar.gz` path is not claimed byte-reproducible. |
-| Candidate checksums/provenance | Pass after Stage 14 | Candidate construction writes `SHA256SUMS` and an inspectable `provenance.json` bound to commit, version, build epoch, Python, tools, artifact hashes, and verification policy. |
-| Candidate artifact workflow | Pass with limits after Stage 14 | Manual read-only workflow can upload a seven-day GitHub Actions candidate artifact; it cannot tag, publish, attest, or mutate repository contents. |
-| Changelog discipline | Pass | `CHANGELOG.md` records unreleased changes and distinguishes development history from tagged releases. |
-| Private vulnerability reporting | Gap | `SECURITY.md` does not claim that a verified private reporting channel is enabled. |
-| Fully locked dependency reconstruction | Gap | The known-good file pins direct dependencies but does not yet provide a complete hashed transitive lock or offline reconstruction guarantee. |
-| Cryptographic release provenance | Gap | Candidate provenance is an inspectable JSON record, not a cryptographic attestation. No release signing, SBOM, or package-registry trusted-publishing path is yet approved. |
-| Byte-reproducible source distribution | Gap if required | The current sdist is checksum-identified but not byte-reproducible across repeated same-environment builds. This is not currently promoted as a release guarantee. |
-| Tagged releases | Gap | No public GitHub release or package release has been published as of this audit baseline. |
-| Independent security assessment | Gap | The controls have not been independently security-audited. |
-| Production deployment evidence | Gap | No deployment-specific production evidence is claimed. |
+| Supported Python compatibility | IMPLEMENTED | Required matrix covers 3.11-3.14 independently of the release lock. |
+| Build backend identity | IMPLEMENTED | `pyproject.toml` exact-pins the Setuptools build backend used by the release path. |
+| Release dependency reconstruction | IMPLEMENTED | Exact roots are resolved into a candidate-specific wheelhouse; every wheel is SHA-256 bound in a generated lock. |
+| Offline hash verification | VERIFIED IN CI DESIGN | Required CI reconstructs from the bundled wheelhouse with `--no-index --require-hashes`. |
+| Wheel reproducibility | VERIFIED IN CI DESIGN | Two same-run candidate builds must have identical wheel bytes. |
+| Source distribution reproducibility | IMPLEMENTED | Sdist archive metadata is normalized and repeated same-environment builds must match byte-for-byte. |
+| SBOM | IMPLEMENTED | Deterministic CycloneDX 1.6 JSON is bound to commit, artifact hashes, and dependency-lock identity. |
+| Provenance | IMPLEMENTED | Provenance v2 plus an in-toto/SLSA-shaped local statement bind commit, environment, tools, artifacts, dependency lock, and SBOM. |
+| Independent candidate verification | IMPLEMENTED | `scripts/verify_release_candidate.py` rejects file-set drift, checksum drift, identity drift, lock drift, and stale fingerprints. |
+| Release attack tests | IMPLEMENTED | Tamper, substitution, stale approval, dirty-tree, and reproducibility failure cases are covered. |
+| Keyless cryptographic attestation | PREPARED | Protected publish workflow uses GitHub keyless attestations only after release approval. External GitHub availability/configuration still applies. |
+| Trusted PyPI publishing | PREPARED, DISABLED | Workflow uses OIDC and no long-lived registry token, but a repository variable, protected environment, and PyPI trusted-publisher configuration must be explicitly set. |
+| Vulnerability visibility | IMPLEMENTED | Scheduled/manual `pip-audit` is separate from deterministic offline unit tests. |
+| Private vulnerability reporting | REQUIRES EXTERNAL SETUP | Repository settings must enable GitHub private vulnerability reporting; see `docs/private-vulnerability-reporting.md`. |
+| Tagged/package release | REQUIRES MAINTAINER DECISION | No tag, GitHub Release, or package upload is authorized by these changes. |
+| Independent security assessment | REQUIRES EXTERNAL SETUP | Repository controls have not been independently security-audited. |
+| Deployment production evidence | REQUIRES EXTERNAL SETUP | Depends on each intended environment. |
 
-## Release-candidate process
+`VERIFIED IN CI DESIGN` means the exact branch CI must still execute successfully before the claim is promoted to evidence for a specific commit. The repository must not invent a pass result before that run exists.
 
-See `docs/release-candidate.md` for the candidate build contract, supported Python lines, dependency lanes, wheel reproducibility gate, source-distribution integrity boundary, checksum/provenance outputs, and the separation between candidate construction and publication.
+## External setup before first PyPI publication
 
-The manual candidate workflow is preparation only. It does not authorize or perform a public release.
+The repository-resolvable machinery is intentionally fail-closed until maintainers complete these external steps:
 
-## Remaining first-release gates
+1. enable GitHub private vulnerability reporting and verify the private report flow;
+2. create GitHub environment `pypi-release` and require appropriate maintainer reviewers;
+3. configure the PyPI trusted publisher for `legendteddy/manager`, workflow `release-publish.yml`, environment `pypi-release`;
+4. only after those controls are reviewed, set repository variable `MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED=true`;
+5. build a fresh candidate from the exact intended `main` commit;
+6. review its candidate-manifest SHA-256, changelog hash, SBOM, provenance, lock, CI result, and known limitations;
+7. dispatch the publish workflow with those exact values;
+8. approve the protected environment only if the displayed authorization packet matches the reviewed candidate.
 
-Before the first public package release:
+If `main` moves, the candidate changes, or any supplied hash changes, the workflow fails closed and a fresh candidate/approval is required.
 
-1. enable and verify an actionable private vulnerability-reporting path;
-2. decide whether the first release requires a fully hashed transitive lock or whether the known-good direct baseline is sufficient;
-3. decide whether byte-reproducible source distributions are required for the first release or whether checksum identity is sufficient;
-4. define the approved cryptographic provenance/signing/SBOM policy for released artifacts;
-5. produce a release candidate from the exact intended release commit;
-6. verify its checksums, provenance record, changelog, compatibility evidence, and known limitations;
-7. bind explicit maintainer approval to the exact commit, version, artifact hashes, and publication target;
-8. publish only after that approval.
+## Documentation
 
-Do not collapse these gates into a claim that the framework is generally secure or production-ready.
+See:
+
+- `docs/release-candidate.md` for the candidate and verification contract;
+- `docs/release-security.md` for signing, attestation, trusted publishing, and residual limits;
+- `docs/private-vulnerability-reporting.md` for the required GitHub setting.

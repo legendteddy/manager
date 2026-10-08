@@ -6,6 +6,20 @@ The format is intentionally simple while the project remains pre-stable. Release
 
 ## Unreleased
 
+### Supply-chain and release security
+
+- make the release candidate self-reconstructing with a candidate-specific dependency wheelhouse, structured dependency lock, deterministic hash-locked requirements, and required offline `--require-hashes` reconstruction;
+- exact-pin the Setuptools PEP 517 backend used by the release build while retaining independent compatibility testing across Python 3.11 through 3.14;
+- normalize source-distribution archive metadata and promote the same-environment sdist path to the same repeat-build byte-reproducibility gate as the wheel;
+- add deterministic CycloneDX 1.6 SBOM output bound to the exact commit, package artifacts, and dependency-lock identity;
+- strengthen provenance with clean-tree state, build epoch/environment/tool identity, dependency-lock and SBOM hashes, plus an unsigned in-toto/SLSA-shaped statement;
+- add an exact candidate-manifest fingerprint and independent verifier that rejects artifact-set drift, checksum drift, wrong commit/version, dependency substitution, missing hashes, and stale release approval;
+- add release attack regression tests for modified wheel/sdist, missing artifacts, dependency substitution, dirty source, stale approval, and reproducibility failure;
+- add scheduled/manual dependency vulnerability visibility using a pinned `pip-audit` release without making network-dependent vulnerability data part of deterministic offline unit tests;
+- prepare a fail-closed PyPI trusted-publishing workflow with exact candidate/changelog/CI binding, protected-environment approval, OIDC, and keyless GitHub build-provenance attestations;
+- document the exact external GitHub step required to enable private vulnerability reporting and leave that item classified as external setup until verified;
+- do not publish, tag, create a GitHub Release, or deploy any artifact as part of this work.
+
 ### First-release engineering
 
 - add required Python 3.11, 3.12, 3.13, and 3.14 compatibility coverage, including wheel build/install/import on every advertised line;

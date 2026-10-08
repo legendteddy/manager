@@ -33,7 +33,7 @@ jobs:
 
       - name: Compile reference runtime
         shell: bash
-        run: python -m compileall -q runtime/python scripts/schema_conformance.py scripts/build_release_candidate.py
+        run: python -m compileall -q runtime/python scripts/schema_conformance.py scripts/build_release_candidate.py scripts/verify_release_candidate.py
 
       - name: Run unit tests
         shell: bash
@@ -59,7 +59,7 @@ jobs:
   public-safety:
     needs: python-compatibility
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out event revision
         shell: bash
@@ -74,9 +74,9 @@ jobs:
         shell: bash
         run: python3 scripts/repository_integrity.py
 
-      - name: Compile Python reference runtime
+      - name: Compile Python reference runtime and release tooling
         shell: bash
-        run: python3 -m compileall -q runtime/python scripts/schema_conformance.py scripts/build_release_candidate.py
+        run: python3 -m compileall -q runtime/python scripts/schema_conformance.py scripts/build_release_candidate.py scripts/verify_release_candidate.py
 
       - name: Run Python reference runtime unit tests
         shell: bash
@@ -86,7 +86,7 @@ jobs:
         shell: bash
         run: PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
 
-      - name: Install known-good release dependency baseline
+      - name: Install known-good release dependency roots
         shell: bash
         run: python3 -m pip install --disable-pip-version-check --quiet --upgrade -r runtime/python/constraints/known-good.txt
 
@@ -94,17 +94,44 @@ jobs:
         shell: bash
         run: PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
 
-      - name: Build reproducible release candidate wheel twice
+      - name: Resolve release dependency wheelhouse twice
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/build_release_candidate.py --output /tmp/manager-rc-a
-          python3 scripts/build_release_candidate.py --output /tmp/manager-rc-b --compare-to /tmp/manager-rc-a
-          python3 -m pip install --disable-pip-version-check --no-deps --target /tmp/manager-rc-install /tmp/manager-rc-a/artifacts/*.whl
+          rm -rf /tmp/manager-deps-a /tmp/manager-deps-b
+          mkdir -p /tmp/manager-deps-a /tmp/manager-deps-b
+          python3 -m pip download --disable-pip-version-check --only-binary=:all: --dest /tmp/manager-deps-a -r runtime/python/constraints/known-good.txt
+          python3 -m pip download --disable-pip-version-check --only-binary=:all: --dest /tmp/manager-deps-b -r runtime/python/constraints/known-good.txt
+
+      - name: Build reproducible release candidate twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/build_release_candidate.py --dependency-dir /tmp/manager-deps-a --output /tmp/manager-rc-a
+          python3 scripts/build_release_candidate.py --dependency-dir /tmp/manager-deps-b --output /tmp/manager-rc-b --compare-to /tmp/manager-rc-a
+          python3 scripts/verify_release_candidate.py /tmp/manager-rc-a \
+            --expected-commit "${GITHUB_SHA}" \
+            --pyproject runtime/python/pyproject.toml
+
+      - name: Prove offline hash-locked dependency reconstruction
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/manager-offline-install /tmp/manager-rc-install /tmp/manager-sdist-wheel
+          mkdir -p /tmp/manager-offline-install /tmp/manager-rc-install /tmp/manager-sdist-wheel
+          python3 -m pip install --disable-pip-version-check --no-index \
+            --find-links /tmp/manager-rc-a/dependencies \
+            --require-hashes \
+            --target /tmp/manager-offline-install \
+            -r /tmp/manager-rc-a/requirements.lock
+          python3 -m pip install --disable-pip-version-check --no-deps \
+            --target /tmp/manager-rc-install /tmp/manager-rc-a/artifacts/*.whl
           PYTHONPATH=/tmp/manager-rc-install python3 - <<'PY'
           import manager_runtime
           assert manager_runtime.__all__
           PY
+          python3 -m pip wheel --disable-pip-version-check --no-deps --no-build-isolation \
+            --wheel-dir /tmp/manager-sdist-wheel /tmp/manager-rc-a/artifacts/*.tar.gz
 
       - name: Run MCP stdio transport conformance
         shell: bash
