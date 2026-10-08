@@ -20,6 +20,7 @@ from manager_runtime.state import (
     resume_tool_approval,
 )
 from manager_runtime.tools import ToolRegistry, execute_tool_request
+from manager_runtime.tools.base import tool_request_fingerprint
 
 
 def _now() -> str:
@@ -27,6 +28,42 @@ def _now() -> str:
 
 
 def _state(*, status: str = "running", revision: int = 1) -> dict:
+    pending_action = None
+    if status in {"waiting_approval", "executing"}:
+        request = _request()
+        approval = {
+            "approval_id": "approval:request:distributed:commit",
+            "run_id": request["run_id"],
+            "status": "pending",
+            "action": "tool:commit",
+            "target": "synthetic-target",
+            "material_parameters": request["arguments"],
+            "materiality": "material",
+            "risk_class": "critical",
+            "reason": "Synthetic approval fixture for coordination tests.",
+            "recommendation": "Synthetic only.",
+            "recovery": "Reconcile the external outcome before retry.",
+            "issued_at": _now(),
+            "resolved_at": None,
+            "resolved_by": None,
+            "approved_by": None,
+            "action_fingerprint": tool_request_fingerprint(request),
+        }
+        if status == "executing":
+            approval["status"] = "approved"
+            approval["resolved_at"] = _now()
+            approval["resolved_by"] = "synthetic-human"
+            approval["approved_by"] = "synthetic-human"
+        pending_action = {
+            "tool_request": request,
+            "approval": approval,
+            "tool_definition_fingerprint": "sha256:synthetic",
+            "authorization_context": {
+                "scope_authorized": True,
+                "target_verified": True,
+            },
+        }
+
     return {
         "run_id": "run:distributed",
         "task_id": "distributed",
@@ -45,7 +82,7 @@ def _state(*, status: str = "running", revision: int = 1) -> dict:
                 "sensitivity": "public",
             },
         },
-        "pending_action": {} if status in {"waiting_approval", "executing"} else None,
+        "pending_action": pending_action,
         "last_tool_result": None,
         "trace_snapshot": None,
         "result_snapshot": None,

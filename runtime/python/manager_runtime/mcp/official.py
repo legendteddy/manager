@@ -7,6 +7,11 @@ from .base import MCPBoundaryError, normalize_mcp_tool
 
 T = TypeVar("T")
 
+_DEFAULT_OPERATION_TIMEOUT_SECONDS = 30.0
+_DEFAULT_MAX_DISCOVERY_PAGES = 100
+_DEFAULT_MAX_DISCOVERED_TOOLS = 1000
+_DEFAULT_MAX_CURSOR_CHARS = 4096
+
 
 class OfficialMCPClient:
     """Optional synchronous bridge to the official MCP Python SDK v2.
@@ -22,15 +27,34 @@ class OfficialMCPClient:
         server_id: str,
         target: Any,
         *,
-        operation_timeout_seconds: float | None = None,
+        operation_timeout_seconds: float | None = _DEFAULT_OPERATION_TIMEOUT_SECONDS,
+        max_discovery_pages: int = _DEFAULT_MAX_DISCOVERY_PAGES,
+        max_discovered_tools: int = _DEFAULT_MAX_DISCOVERED_TOOLS,
+        max_cursor_chars: int = _DEFAULT_MAX_CURSOR_CHARS,
     ) -> None:
         if not isinstance(server_id, str) or not server_id:
             raise ValueError("server_id must be non-empty text")
-        if operation_timeout_seconds is not None and operation_timeout_seconds <= 0:
-            raise ValueError("operation_timeout_seconds must be positive when provided")
+        if operation_timeout_seconds is None:
+            operation_timeout_seconds = _DEFAULT_OPERATION_TIMEOUT_SECONDS
+        if (
+            isinstance(operation_timeout_seconds, bool)
+            or not isinstance(operation_timeout_seconds, (int, float))
+            or operation_timeout_seconds <= 0
+        ):
+            raise ValueError("operation_timeout_seconds must be positive")
+        for name, value in (
+            ("max_discovery_pages", max_discovery_pages),
+            ("max_discovered_tools", max_discovered_tools),
+            ("max_cursor_chars", max_cursor_chars),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
         self.server_id = server_id
         self.target = target
-        self.operation_timeout_seconds = operation_timeout_seconds
+        self.operation_timeout_seconds = float(operation_timeout_seconds)
+        self.max_discovery_pages = max_discovery_pages
+        self.max_discovered_tools = max_discovered_tools
+        self.max_cursor_chars = max_cursor_chars
 
     @staticmethod
     def _imports():
@@ -76,8 +100,6 @@ class OfficialMCPClient:
         anyio, _ = self._imports()
 
         async def guarded() -> T:
-            if self.operation_timeout_seconds is None:
-                return await function()
             with anyio.fail_after(self.operation_timeout_seconds):
                 return await function()
 
@@ -119,19 +141,45 @@ class OfficialMCPClient:
             return payload["structured_content"]
         return payload.get("content", payload)
 
-    @staticmethod
-    async def _discover_tool(client: Any, name: str) -> dict[str, Any]:
-        matches: list[dict[str, Any]] = []
+    def _checked_cursor(self, value: Any, seen: set[str]) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            raise MCPBoundaryError("MCP discovery returned an invalid pagination cursor")
+        if len(value) > self.max_cursor_chars:
+            raise MCPBoundaryError("MCP discovery cursor exceeded the configured size limit")
+        if value in seen:
+            raise MCPBoundaryError("MCP discovery repeated a pagination cursor")
+        seen.add(value)
+        return value
+
+    async def _bounded_tools(self, client: Any) -> list[dict[str, Any]]:
+        collected: list[dict[str, Any]] = []
         cursor: str | None = None
+        seen_cursors: set[str] = set()
+        pages = 0
+
         while True:
+            if pages >= self.max_discovery_pages:
+                raise MCPBoundaryError("MCP discovery exceeded the configured page limit")
             page = await client.list_tools(cursor=cursor)
-            for tool in page.tools:
-                normalized = normalize_mcp_tool(tool)
-                if normalized["name"] == name:
-                    matches.append(normalized)
-            cursor = page.next_cursor
+            pages += 1
+            tools = getattr(page, "tools", None)
+            if tools is None:
+                raise MCPBoundaryError("MCP discovery returned a page without tools")
+            for tool in tools:
+                if len(collected) >= self.max_discovered_tools:
+                    raise MCPBoundaryError("MCP discovery exceeded the configured tool limit")
+                collected.append(normalize_mcp_tool(tool))
+
+            cursor = self._checked_cursor(getattr(page, "next_cursor", None), seen_cursors)
             if cursor is None:
-                break
+                return collected
+
+    async def _discover_tool(self, client: Any, name: str) -> dict[str, Any]:
+        matches = [
+            tool for tool in await self._bounded_tools(client) if tool["name"] == name
+        ]
         if not matches:
             raise MCPBoundaryError(f"MCP tool disappeared before execution: {name}")
         if len(matches) != 1:
@@ -143,16 +191,8 @@ class OfficialMCPClient:
         target = self.target
 
         async def collect() -> list[dict[str, Any]]:
-            collected: list[dict[str, Any]] = []
             async with Client(target) as client:
-                cursor: str | None = None
-                while True:
-                    page = await client.list_tools(cursor=cursor)
-                    for tool in page.tools:
-                        collected.append(normalize_mcp_tool(tool))
-                    cursor = page.next_cursor
-                    if cursor is None:
-                        return collected
+                return await self._bounded_tools(client)
 
         return self._run_operation("tool discovery", collect)
 
