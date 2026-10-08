@@ -164,7 +164,7 @@ class ToolRuntimeTests(unittest.TestCase):
         registry = ToolRegistry()
         tool = FakeTool()
         registry.register(definition("send", "external_commitment", verify=True), tool)
-        req = request("send", {"value": "hello", "target": "synthetic@example.invalid"}, target="synthetic@example.invalid")
+        req = request("send", {"value": "hello", "target": "synthetic-destination"}, target="synthetic-destination")
         blocked = execute_tool_request(
             task(), req, registry, {"scope_authorized": True, "target_verified": False}
         )
