@@ -8,9 +8,9 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Conformance-hardened durable agent-loop stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, resumable loop checkpoints, full contract-conformance testing, legal durable-state transition validation, and explicit evidence-based recovery resolution.
+**Governed MCP interoperability stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, resumable loop checkpoints, full contract-conformance testing, legal durable-state transition validation, explicit evidence-based recovery resolution, and a Manager-owned MCP adapter boundary.
 
-The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
+The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, automatic trust of MCP servers, provider-managed MCP execution, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
 
 ## Core principles
 
@@ -24,6 +24,7 @@ The implemented runtime is intentionally narrow. It does not claim production re
 - **Durable loop identity.** Restart preserves consumed budgets, seen-action fingerprints, provider/model identity, and trusted tool-definition fingerprints instead of granting a fresh execution context.
 - **Fail-closed persistence.** Corrupted state, impossible transitions, unsupported checkpoint versions, and uncertain external outcomes stop execution rather than being guessed through.
 - **Contract conformance.** Representative emitted runtime artifacts must validate against the public machine-readable contracts in CI.
+- **Untrusted interoperability.** External protocols may expose capabilities, but Manager retains local authority over classification, authorization, approval, verification, and model exposure.
 - **Authoritative reconciliation.** Update the source that owns the truth first, then propagate dependent effects and verify consistency.
 - **Evidence over ceremony.** Evals and observable outcomes matter more than agent count, role-play, or verbose traces.
 - **Provider neutrality.** Canonical contracts do not depend on one model vendor, tool protocol, state store, or product surface.
@@ -74,7 +75,7 @@ orchestrator
       ↓
 task classification + routing + policy
       ↓
-capabilities / specialist agents / tools
+capabilities / specialist agents / tools / interoperability adapters
       ↓
 evaluation + approval when required
       ↓
@@ -91,9 +92,9 @@ tracing + evals + schema conformance
 
 Internal components use conventional technical terms such as `orchestrator`, `router`, `capability`, `specialist agent`, `policy`, `approval`, `state`, `evaluator`, `reconciliation`, `tracing`, `eval`, and `adapter`.
 
-## Provider, tool, loop, and state boundary
+## Provider, tool, MCP, loop, and state boundary
 
-Manager's deterministic governance remains outside model providers and tool implementations.
+Manager's deterministic governance remains outside model providers, MCP servers, and tool implementations.
 
 ```text
 Manager control plane
@@ -105,6 +106,8 @@ model adapter
 model response / tool proposal
       ↓
 trusted ToolRegistry + deterministic policy
+      ↓
+native tool adapter OR Manager-owned MCP adapter
       ↓
 analysis/read → execute + checkpoint sanitized result
 consequential → durable approval checkpoint first
@@ -120,7 +123,11 @@ persisted loop checkpoint for restart/resume
 
 A model response supplies content or proposes a tool inside an already-bounded workflow. It cannot approve a material action, lower a tool's side-effect class, grant itself authorization, redefine state ownership, resolve an uncertain external side effect, or bypass reconciliation.
 
+An MCP server may advertise tool names, schemas, descriptions, and annotations. Manager treats those values as untrusted discovery metadata. Only explicitly configured bindings enter the trusted registry, and local Manager configuration remains authoritative for descriptions, side-effect class, verification, sensitivity, and versioning. Schema or binding drift fails closed.
+
 The first reference provider adapter targets OpenAI's Responses API. The adapter normalizes custom function calls into proposals and maps verified continuation results through `previous_response_id` plus `function_call_output`; execution remains application-owned.
+
+The optional MCP reference bridge targets the official MCP Python SDK v2 line. Connection targets, process commands, URLs, credentials, and OAuth configuration stay outside Manager's canonical contracts.
 
 The first durable state adapter uses SQLite through Python's standard library. It is a reference durability layer, not an encryption boundary, distributed lock service, or universal production datastore recommendation.
 
@@ -137,28 +144,36 @@ python3 -m pip install 'jsonschema>=4.23,<5'
 PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
 ```
 
-The deterministic eval and unit-test suite does not require provider credentials, live tools, network model calls, or production state stores. Schema conformance uses `jsonschema` as a test-only dependency.
+Optional reference integrations:
+
+```bash
+python3 -m pip install -e 'runtime/python[openai]'
+python3 -m pip install -e 'runtime/python[mcp]'
+```
+
+The deterministic eval and unit-test suite does not require provider credentials, live MCP servers, live tools, network model calls, or production state stores. Schema conformance uses `jsonschema` as a test-only dependency.
 
 ## Manager, MCP, and product integrations
 
 Manager is the core framework/runtime concept.
 
 - **Agent harness**: runtime environment around execution.
-- **MCP**: optional interoperability adapter, not Manager's identity.
+- **MCP**: optional interoperability adapter, not Manager's identity or authority source.
 - **Product/plugin integration**: optional distribution or integration surface.
 
-Provider- or product-specific behavior belongs behind adapters rather than inside canonical contracts. Provider-managed MCP execution is not enabled in the reference path because tool execution must remain behind Manager's policy and approval boundary.
+Manager-owned MCP adapters keep discovery and execution behind the same trusted `ToolRegistry`, policy, approval, verification, redaction, and durable-state boundaries as native tools. Provider-managed MCP execution is not enabled in the reference path because tool execution must remain behind Manager's policy and approval boundary unless equivalent enforcement is proven.
 
 ## Repository map
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): logical architecture and invariants
 - [`GOVERNANCE.md`](GOVERNANCE.md): authority, accountability, materiality, approvals, and bounded evolution
-- [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, persistence, recovery, and public safety
+- [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, persistence, recovery, interoperability, and public safety
 - [`AGENTS.md`](AGENTS.md): instructions for AI systems working in this repository
 - [`contracts/`](contracts/): provider-neutral machine-readable contracts
-- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, durable run store, bounded agent loop, durable loop-resume state machine, and recovery controls
+- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, MCP adapter boundary, durable run store, bounded agent loop, durable loop-resume state machine, and recovery controls
 - [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
 - [`docs/tool-runtime.md`](docs/tool-runtime.md): tool proposal, policy, approval, execution, and verification boundary
+- [`docs/mcp-adapters.md`](docs/mcp-adapters.md): MCP discovery, binding, trust, and execution boundary
 - [`docs/agent-loop.md`](docs/agent-loop.md): finite multi-step model/tool continuation and stop conditions
 - [`docs/durable-agent-loop.md`](docs/durable-agent-loop.md): persisted loop phases, restart invariants, and durable continuation behavior
 - [`docs/run-state.md`](docs/run-state.md): durable checkpoints, resumable approvals, and recovery-required behavior
@@ -178,6 +193,6 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, a tested durable loop-resume path, full Draft 2020-12 conformance checks for representative emitted artifacts, legal state-transition enforcement, corrupted-state rejection, and an explicit recovery protocol for uncertain external outcomes. Current CI verifies public-repository integrity, Python compilation, unit tests, deterministic behavioral evals, and schema conformance without requiring provider credentials or live external side effects.
+Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, a tested durable loop-resume path, full Draft 2020-12 conformance checks for representative emitted artifacts, legal state-transition enforcement, corrupted-state rejection, an explicit recovery protocol for uncertain external outcomes, and a tested Manager-owned MCP tool-binding boundary with an optional official SDK bridge. Current CI verifies public-repository integrity, Python compilation, unit tests, deterministic behavioral evals, and schema conformance without requiring provider credentials, live MCP servers, or live external side effects.
 
-Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", "distributed", or "safe for autonomous production side effects" require additional evidence for that exact claim.
+Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", "distributed", "trusted MCP", or "safe for autonomous production side effects" require additional evidence for that exact claim.
