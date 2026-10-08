@@ -18,7 +18,7 @@ RUN_STATUSES = {
 ALLOWED_TRANSITIONS = {
     "running": {"running", "waiting_approval", "completed", "blocked", "failed", "recovery_required"},
     "waiting_approval": {"waiting_approval", "executing", "cancelled", "recovery_required"},
-    "executing": {"running", "waiting_approval", "completed", "failed", "recovery_required"},
+    "executing": {"executing", "running", "waiting_approval", "completed", "failed", "recovery_required"},
     "recovery_required": {"running", "waiting_approval", "completed", "cancelled", "recovery_required"},
     "completed": set(),
     "blocked": set(),
