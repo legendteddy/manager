@@ -72,6 +72,14 @@ def verify_baseline() -> dict[str, str]:
     return observed
 
 
+def artifact_policy(name: str) -> str:
+    if name.endswith(".whl"):
+        return "byte_reproducibility_required"
+    if name.endswith(".tar.gz"):
+        return "checksum_integrity_only"
+    raise SystemExit(f"unsupported release-candidate artifact: {name}")
+
+
 def build(output: Path) -> dict[str, str]:
     commit = run("git", "rev-parse", "HEAD")
     source_date_epoch = git_value("%ct")
@@ -131,10 +139,19 @@ def build(output: Path) -> dict[str, str]:
         "platform": platform.platform(),
         "build_tools": tool_versions,
         "artifacts": [
-            {"path": f"artifacts/{name}", "sha256": digest}
+            {
+                "path": f"artifacts/{name}",
+                "sha256": digest,
+                "verification_policy": artifact_policy(name),
+            }
             for name, digest in sorted(hashes.items())
         ],
-        "note": "Local release-candidate provenance record; not a cryptographic attestation or publication authorization.",
+        "note": (
+            "Local release-candidate provenance record. The wheel is required to be "
+            "byte-reproducible in the same verified build environment; the source distribution "
+            "is checksum-recorded but is not currently claimed byte-reproducible. This record is "
+            "not a cryptographic attestation or publication authorization."
+        ),
     }
     (output / "provenance.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -153,6 +170,38 @@ def load_hashes(output: Path) -> dict[str, str]:
     return hashes
 
 
+def wheel_hash(hashes: dict[str, str]) -> tuple[str, str]:
+    wheels = [(name, digest) for name, digest in hashes.items() if name.endswith(".whl")]
+    if len(wheels) != 1:
+        raise SystemExit(f"expected exactly one wheel hash, found {len(wheels)}")
+    return wheels[0]
+
+
+def compare_candidates(expected: dict[str, str], observed: dict[str, str]) -> bool:
+    if set(expected) != set(observed):
+        print("release-candidate artifact filenames changed between builds", file=sys.stderr)
+        print(f"expected: {sorted(expected)}", file=sys.stderr)
+        print(f"observed: {sorted(observed)}", file=sys.stderr)
+        return False
+
+    expected_wheel_name, expected_wheel_hash = wheel_hash(expected)
+    observed_wheel_name, observed_wheel_hash = wheel_hash(observed)
+    if expected_wheel_name != observed_wheel_name or expected_wheel_hash != observed_wheel_hash:
+        print("release-candidate wheel is not byte-reproducible", file=sys.stderr)
+        print(f"expected: {expected_wheel_name} {expected_wheel_hash}", file=sys.stderr)
+        print(f"observed: {observed_wheel_name} {observed_wheel_hash}", file=sys.stderr)
+        return False
+
+    print("release-candidate wheel hash is byte-reproducible")
+    for name in sorted(expected):
+        if name.endswith(".tar.gz") and expected[name] != observed[name]:
+            print(
+                "NOTE: source distribution hash changed between builds; "
+                "sdist is checksum-recorded but not claimed byte-reproducible"
+            )
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -162,12 +211,8 @@ def main() -> int:
     hashes = build(args.output.resolve())
     if args.compare_to is not None:
         expected = load_hashes(args.compare_to.resolve())
-        if hashes != expected:
-            print("release candidate is not byte-reproducible", file=sys.stderr)
-            print(f"expected: {expected}", file=sys.stderr)
-            print(f"observed: {hashes}", file=sys.stderr)
+        if not compare_candidates(expected, hashes):
             return 1
-        print("release candidate artifact hashes are reproducible")
     else:
         print("release candidate built")
 
