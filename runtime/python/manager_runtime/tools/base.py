@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -105,7 +106,9 @@ class ToolRegistry:
     """Trusted registry for tool metadata and implementations.
 
     Side-effect metadata is owned by this registry and is never taken from a
-    model-generated proposal.
+    model-generated proposal. Definition objects are isolated at ingress and
+    egress so mutable caller-owned dictionaries cannot rewrite trusted policy
+    or schema after registration.
     """
 
     def __init__(self) -> None:
@@ -116,10 +119,13 @@ class ToolRegistry:
         name = definition["name"]
         if name in self._tools:
             raise ToolRuntimeError(f"tool already registered: {name}")
-        self._tools[name] = RegisteredTool(dict(definition), adapter)
+        self._tools[name] = RegisteredTool(deepcopy(definition), adapter)
 
     def get(self, name: str) -> RegisteredTool | None:
-        return self._tools.get(name)
+        registered = self._tools.get(name)
+        if registered is None:
+            return None
+        return RegisteredTool(deepcopy(registered.definition), registered.adapter)
 
     def model_definitions(self, allowed_tools: list[str] | None = None) -> list[ToolPayload]:
         names = allowed_tools if allowed_tools is not None else sorted(self._tools)
@@ -133,7 +139,7 @@ class ToolRegistry:
                 {
                     "name": definition["name"],
                     "description": definition["description"],
-                    "input_schema": definition["input_schema"],
+                    "input_schema": deepcopy(definition["input_schema"]),
                 }
             )
         return definitions
