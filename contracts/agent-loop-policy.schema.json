@@ -20,6 +20,10 @@
       "const": false,
       "description": "If a provider proposes more tool calls than the remaining budget, the reference runtime executes none of that over-budget batch."
     },
+    "consequential_multi_tool_batch": {
+      "const": "block",
+      "description": "The reference runtime requires consequential tool proposals to be serialized rather than mixed into a multi-tool provider batch."
+    },
     "extensions": {"type": "object", "additionalProperties": true}
   },
   "additionalProperties": false
