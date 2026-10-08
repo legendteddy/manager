@@ -4,8 +4,11 @@
 # Protected governance and security surfaces
 /GOVERNANCE.md @legendteddy
 /SECURITY.md @legendteddy
+/CHANGELOG.md @legendteddy
 /docs/protected-surfaces.md @legendteddy
 /docs/public-private-boundary.md @legendteddy
+/docs/release-readiness.md @legendteddy
+/docs/threat-model.md @legendteddy
 /evals/ @legendteddy
 /.github/workflows/ @legendteddy
 /scripts/ @legendteddy
