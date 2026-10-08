@@ -27,6 +27,7 @@ def load_script(name: str, relative: str):
 
 build_rc = load_script("manager_build_release_candidate", "scripts/build_release_candidate.py")
 verify_rc = load_script("manager_verify_release_candidate", "scripts/verify_release_candidate.py")
+repository_integrity = load_script("manager_repository_integrity", "scripts/repository_integrity.py")
 
 
 def digest(path: Path) -> str:
@@ -287,6 +288,56 @@ class ReleaseCandidateSecurityTests(unittest.TestCase):
             build_rc.normalize_sdist(first, 100)
             build_rc.normalize_sdist(second, 100)
             self.assertEqual(digest(first), digest(second))
+
+    def test_workflow_guard_rejects_direct_dispatch_input_shell_interpolation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "release.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  publish:\n"
+                "    steps:\n"
+                "      - uses: owner/action@0000000000000000000000000000000000000000\n"
+                "      - shell: bash\n"
+                "        run: |\n"
+                "          echo \"${{ inputs.commit_sha }}\"\n",
+                encoding="utf-8",
+            )
+            failures: list[str] = []
+            repository_integrity.validate_supply_chain_workflow(workflow, failures)
+            self.assertTrue(any("must enter shell through env" in failure for failure in failures))
+
+    def test_workflow_guard_rejects_unpinned_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "release.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  publish:\n"
+                "    steps:\n"
+                "      - uses: owner/action@v1\n",
+                encoding="utf-8",
+            )
+            failures: list[str] = []
+            repository_integrity.validate_supply_chain_workflow(workflow, failures)
+            self.assertTrue(any("40-hex commit" in failure for failure in failures))
+
+    def test_workflow_guard_accepts_env_mediated_dispatch_input_and_pinned_action(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "release.yml"
+            workflow.write_text(
+                "jobs:\n"
+                "  publish:\n"
+                "    steps:\n"
+                "      - uses: owner/action@0000000000000000000000000000000000000000\n"
+                "      - shell: bash\n"
+                "        env:\n"
+                "          RELEASE_SHA: ${{ inputs.commit_sha }}\n"
+                "        run: |\n"
+                "          test -n \"${RELEASE_SHA}\"\n",
+                encoding="utf-8",
+            )
+            failures: list[str] = []
+            repository_integrity.validate_supply_chain_workflow(workflow, failures)
+            self.assertEqual(failures, [])
 
 
 if __name__ == "__main__":
