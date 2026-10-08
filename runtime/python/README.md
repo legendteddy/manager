@@ -2,7 +2,7 @@
 
 This directory contains Manager's first reference runtime.
 
-The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, durable approval checkpoints, and a bounded multi-step model/tool continuation loop. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
+The runtime remains intentionally narrow. It implements a deterministic **control plane** for routing, approval, bounded delegation, public-safety filtering, routine reconciliation, a provider-neutral model adapter boundary, a governed custom-tool execution boundary, durable approval checkpoints, a bounded multi-step model/tool continuation loop, and a durable resumable loop state machine. Python is the first reference implementation language; the canonical Manager contracts remain language- and provider-neutral.
 
 ## Scope
 
@@ -39,21 +39,26 @@ Implemented:
 - no automatic approval carry-forward between loop actions;
 - sensitive tool-result withholding before model continuation;
 - OpenAI continuation through `previous_response_id` plus `function_call_output`;
+- durable multi-step execution through `run_durable_agent_loop` and `resume_durable_agent_loop`;
+- persisted model/tool phases that preserve consumed budgets and seen-action fingerprints across restart;
+- provider and allowed-tool-definition revalidation before durable continuation;
+- mandatory durable approval checkpoints for every consequential tool class in durable mode;
+- process-restart continuation after an approved, verified side effect without replaying that side effect;
 - synthetic tool adapters and unit tests with no live side effects.
 
 Not implemented:
 
 - provider-executed built-in tools or provider-managed MCP execution;
 - arbitrary production tools or credentials;
-- durable resumption of the whole multi-step model/tool loop;
-- parallel tool execution;
-- automatic retries of side effects;
+- exactly-once provider calls;
 - exactly-once external side effects;
+- parallel consequential tool execution;
+- automatic retries of side effects;
 - transaction rollback orchestration;
 - sandbox/process isolation;
 - encrypted state-at-rest management;
-- distributed locks or high-availability state stores;
-- durable provider conversation/session state beyond adapter-level continuation references;
+- distributed locks, leases, or high-availability state stores;
+- automatic reconciliation of uncertain `recovery_required` outcomes;
 - multimodal model input;
 - streaming;
 - provider failover or automatic model selection;
@@ -143,9 +148,34 @@ On resume, Manager revalidates:
 
 If execution was durably marked `executing` and the process disappeared before recording the outcome, a later resume changes the run to `recovery_required` rather than automatically repeating the action.
 
-Stage 7 does not yet persist the surrounding multi-step model loop across that approval interruption.
-
 See [`docs/run-state.md`](../../docs/run-state.md).
+
+## Durable bounded agent loop
+
+Stage 8 connects the durable state layer to the bounded loop:
+
+```text
+run_durable_agent_loop(...)
+→ persist response_ready
+→ evaluate proposal
+→ read/analysis result → persist continuation_ready
+→ consequential proposal → persist waiting_approval
+→ human decision later
+→ resume_durable_agent_loop(...)
+→ revalidate provider + tools + request + authorization
+→ persist executing
+→ execute + verify
+→ persist continuation_ready
+→ continue model loop with original budgets and seen-action history
+```
+
+Durable mode is stricter than the non-durable loop. `reversible_write`, `external_commitment`, and `sensitive_destructive` actions always require a durable approval checkpoint before execution, even when the lower-level tool policy might otherwise permit a routine reversible write.
+
+Restart does not reset model/tool budgets or exact repeated-action detection. The checkpoint also binds the provider, model, allowed tool set, and trusted tool-definition fingerprints.
+
+A provider call can still be reissued if a process fails after the provider responds but before the next local checkpoint. Manager therefore does not claim exactly-once provider calls.
+
+See [`docs/durable-agent-loop.md`](../../docs/durable-agent-loop.md).
 
 ## Governance boundary
 
@@ -153,4 +183,4 @@ Model and tool proposals remain outside the authority boundary. Durable state do
 
 The SQLite reference adapter is a durability proof, not an encryption layer or universal production datastore recommendation. Embedding applications remain responsible for access control, encryption, retention, backup, and regulatory requirements appropriate to their environment.
 
-A green test or eval run demonstrates only the behavior actually encoded and tested. It does not establish general reasoning quality, provider uptime, security completeness, private-reference parity, deployment readiness, or production suitability.
+A green test or eval run demonstrates only the behavior actually encoded and tested. It does not establish general reasoning quality, provider uptime, security completeness, distributed exactly-once execution, private-reference parity, deployment readiness, or production suitability.

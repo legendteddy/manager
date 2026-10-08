@@ -8,7 +8,7 @@
     "run_id": {"type": "string", "minLength": 1},
     "task_id": {"type": "string", "minLength": 1},
     "status": {
-      "enum": ["running", "waiting_approval", "executing", "completed", "failed", "cancelled", "recovery_required"]
+      "enum": ["running", "waiting_approval", "executing", "completed", "blocked", "failed", "cancelled", "recovery_required"]
     },
     "revision": {"type": "integer", "minimum": 1},
     "created_at": {"type": "string", "format": "date-time"},

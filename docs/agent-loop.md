@@ -54,9 +54,13 @@ This conservative rule avoids silent retry loops. Applications that need legitim
 
 Approval is never carried forward automatically from one agent-loop action to another.
 
-The Stage 7 loop deliberately removes any supplied `approval` object from reusable authorization context before evaluating a newly proposed action. If the action requires approval, the loop stops and returns the pending approval requirement.
+The non-durable loop deliberately removes any supplied `approval` object from reusable authorization context before evaluating a newly proposed action. If the action requires approval, the loop stops and returns the pending approval requirement.
 
-Stage 6 durable approval checkpoints can resolve an individual consequential action, but Stage 7 does not yet persist and resume the entire multi-step model conversation around that interruption. Durable whole-loop resumption remains future work.
+Stage 8 adds a separate durable path through `run_durable_agent_loop(...)` and `resume_durable_agent_loop(...)`. That path persists loop budgets, seen-action fingerprints, provider/model identity, trusted tool-definition fingerprints, normalized responses, and sanitized continuation results across an approval interruption.
+
+Durable mode is intentionally stricter: every consequential tool class must cross a durable approval checkpoint before execution.
+
+See [`durable-agent-loop.md`](durable-agent-loop.md).
 
 ## Tool-result continuation
 
@@ -89,16 +93,16 @@ The reference loop stops when:
 
 Stopping is a control outcome, not evidence that the requested real-world objective was completed.
 
-## Stage 7 limits
+## Limits
 
-Stage 7 does not claim:
+The bounded and durable reference paths do not claim:
 
-- durable resumption of the whole model/tool loop;
 - exactly-once external side effects;
+- exactly-once provider calls;
 - parallel consequential tool execution;
 - automatic side-effect retry;
 - provider failover;
-- distributed loop coordination;
+- distributed loop coordination or locking;
 - sandbox/process isolation;
 - production credentials or production tool safety;
 - private-reference parity;

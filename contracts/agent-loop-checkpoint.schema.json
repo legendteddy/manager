@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/agent-loop-checkpoint.schema.json",
+  "title": "Manager Durable Agent Loop Checkpoint",
+  "type": "object",
+  "required": [
+    "version",
+    "phase",
+    "provider",
+    "model",
+    "allowed_tools",
+    "tool_definition_fingerprints",
+    "max_model_steps",
+    "max_tool_calls",
+    "max_tool_result_chars",
+    "model_steps",
+    "tool_calls",
+    "seen_proposal_fingerprints",
+    "prior_response_ref",
+    "pending_proposal_id",
+    "pending_request_fingerprint",
+    "current_response",
+    "continuation_tool_results"
+  ],
+  "properties": {
+    "version": {"const": 1},
+    "phase": {
+      "enum": ["response_ready", "waiting_approval", "continuation_ready", "terminal"]
+    },
+    "provider": {"type": "string", "minLength": 1},
+    "model": {"type": "string", "minLength": 1},
+    "allowed_tools": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "tool_definition_fingerprints": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "max_model_steps": {"type": "integer", "minimum": 1},
+    "max_tool_calls": {"type": "integer", "minimum": 0},
+    "max_tool_result_chars": {"type": "integer", "minimum": 1},
+    "max_output_tokens": {"type": ["integer", "null"], "minimum": 1},
+    "model_steps": {"type": "integer", "minimum": 1},
+    "tool_calls": {"type": "integer", "minimum": 0},
+    "seen_proposal_fingerprints": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "prior_response_ref": {"type": ["string", "null"]},
+    "pending_proposal_id": {"type": ["string", "null"]},
+    "pending_request_fingerprint": {"type": ["string", "null"]},
+    "current_response": {
+      "anyOf": [{"$ref": "model-response.schema.json"}, {"type": "null"}]
+    },
+    "continuation_tool_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["proposal_id", "status", "output", "redacted"],
+        "properties": {
+          "proposal_id": {"type": "string", "minLength": 1},
+          "status": {"const": "executed"},
+          "output": {"type": "string"},
+          "redacted": {"type": "boolean"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

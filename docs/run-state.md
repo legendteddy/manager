@@ -4,6 +4,8 @@
 
 Stage 6 adds a durable checkpoint boundary for approval interruptions. A consequential tool action can pause, survive process restart, receive a later human decision, revalidate its authority and identity, and either resume or fail closed.
 
+Stage 8 reuses the same run-store contract for a bounded multi-step workflow. The surrounding loop can now persist its budgets, seen-action history, trusted tool-definition fingerprints, provider/model identity, and continuation phase around an approval interruption.
+
 ## Reference lifecycle
 
 ```text
@@ -30,7 +32,9 @@ verify
 persist terminal state
 ```
 
-The durable checkpoint is application state, not model memory and not provider conversation state.
+For a durable bounded loop, successful approved execution can persist `running` rather than terminal `completed`, then return to a `continuation_ready` loop checkpoint for the next model turn.
+
+The durable checkpoint is application state, not model memory and not provider authority.
 
 ## SQLite reference store
 
@@ -39,6 +43,21 @@ The Python reference runtime includes `SQLiteRunStore`, implemented with Python'
 The store uses optimistic revision checks. A write that was prepared from an old revision is rejected instead of silently overwriting newer state.
 
 SQLite is used here to prove the storage contract with minimal dependencies. It is not a claim that SQLite is the correct production store for every deployment, nor is it an encryption or secret-storage boundary.
+
+## Run statuses
+
+The reference run-state contract currently supports:
+
+- `running`;
+- `waiting_approval`;
+- `executing`;
+- `completed`;
+- `blocked`;
+- `failed`;
+- `cancelled`;
+- `recovery_required`.
+
+A loop stop such as budget exhaustion or repeated-action detection can therefore remain a durable `blocked` outcome rather than being mislabeled as success or failure.
 
 ## Approval resumption rules
 
@@ -56,6 +75,8 @@ Consequential tool definitions must declare an application-owned `version`. Chan
 
 A stale approval cannot later be approved. A fresh approval checkpoint is required.
 
+Durable-loop resumption additionally requires the provider identity and the full allowed-tool definition fingerprint set to remain consistent with the stored loop checkpoint.
+
 ## Interrupted execution
 
 Manager persists `executing` before calling the tool adapter. This creates an important recovery signal.
@@ -66,17 +87,30 @@ The operator or embedding application must reconcile the real external outcome b
 
 This reference behavior favors avoiding duplicate consequential side effects over automatic retry convenience.
 
+## Durable bounded-loop phases
+
+Stage 8 stores its workflow-specific checkpoint inside run-state extensions and uses four loop phases:
+
+- `response_ready`;
+- `waiting_approval`;
+- `continuation_ready`;
+- `terminal`.
+
+The loop checkpoint preserves consumed model/tool budgets and exact seen-action fingerprints. Restart therefore does not grant a fresh budget or clear loop-detection history.
+
+See [`durable-agent-loop.md`](durable-agent-loop.md) and [`../contracts/agent-loop-checkpoint.schema.json`](../contracts/agent-loop-checkpoint.schema.json).
+
 ## Limits
 
-Stage 6 does not provide:
+The reference durable state layer does not provide:
 
-- distributed locking across multiple independent stores;
+- distributed locking across multiple independent workers;
 - exactly-once external side effects;
+- exactly-once provider calls;
 - automatic transaction rollback;
 - encrypted application state at rest;
 - multi-action approval batches;
-- durable provider conversation state;
 - automatic recovery from `recovery_required`;
 - production deployment guidance for high-availability state stores.
 
-Applications handling sensitive state remain responsible for access control, encryption, backup, retention, and provider or regulatory requirements appropriate to their environment.
+Applications handling sensitive state remain responsible for access control, encryption, backup, retention, availability, and provider or regulatory requirements appropriate to their environment.

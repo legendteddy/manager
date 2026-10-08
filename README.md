@@ -8,9 +8,9 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Bounded agent-loop stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, and bounded multi-step model/tool continuation.
+**Durable bounded agent-loop stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, and resumable loop checkpoints that preserve budgets and seen-action history across approval interruptions.
 
-The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, exactly-once external side effects, durable whole-loop resumption, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
+The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
 
 ## Core principles
 
@@ -21,6 +21,7 @@ The implemented runtime is intentionally narrow. It does not claim production re
 - **Consequential approval.** Material, destructive, sensitive, or otherwise consequential actions cross a human approval gate.
 - **Resumable approval.** Approval survives interruption only as a durable, exact checkpoint that must be revalidated before execution.
 - **Bounded iteration.** Multi-step model/tool execution uses finite budgets, loop detection, and fresh policy checks at every step.
+- **Durable loop identity.** Restart preserves consumed budgets, seen-action fingerprints, provider/model identity, and trusted tool-definition fingerprints instead of granting a fresh execution context.
 - **Authoritative reconciliation.** Update the source that owns the truth first, then propagate dependent effects and verify consistency.
 - **Evidence over ceremony.** Evals and observable outcomes matter more than agent count, role-play, or verbose traces.
 - **Provider neutrality.** Canonical contracts do not depend on one model vendor, tool protocol, state store, or product surface.
@@ -41,9 +42,13 @@ apply policy, approval, and evaluation gates
   ↓
 continue only within explicit model/tool budgets
   ↓
-checkpoint durable state when interruption is required
+checkpoint normalized model/tool state between durable phases
+  ↓
+checkpoint exact approval before consequential side effects
   ↓
 revalidate before resumed execution
+  ↓
+continue from preserved loop budgets + seen actions
   ↓
 reconcile authoritative state
   ↓
@@ -69,7 +74,7 @@ evaluation + approval when required
       ↓
 bounded model/tool continuation when justified
       ↓
-durable run state for interrupted work
+durable loop/run state for interrupted work
       ↓
 execution
       ↓
@@ -95,7 +100,8 @@ model response / tool proposal
       ↓
 trusted ToolRegistry + deterministic policy
       ↓
-execute / block / require approval
+analysis/read → execute + checkpoint sanitized result
+consequential → durable approval checkpoint first
       ↓
 verification
       ↓
@@ -103,14 +109,14 @@ sanitized verified result
       ↓
 bounded model continuation when budget remains
       ↓
-durable approval checkpoint when interruption is needed
+persisted loop checkpoint for restart/resume
 ```
 
 A model response supplies content or proposes a tool inside an already-bounded workflow. It cannot approve a material action, lower a tool's side-effect class, grant itself authorization, redefine state ownership, or bypass reconciliation.
 
 The first reference provider adapter targets OpenAI's Responses API. The adapter normalizes custom function calls into proposals and maps verified continuation results through `previous_response_id` plus `function_call_output`; execution remains application-owned.
 
-The first durable state adapter uses SQLite through Python's standard library. It is a reference durability layer, not an encryption boundary or a universal production datastore recommendation.
+The first durable state adapter uses SQLite through Python's standard library. It is a reference durability layer, not an encryption boundary, distributed lock service, or universal production datastore recommendation.
 
 ## Reference runtime
 
@@ -142,10 +148,11 @@ Provider- or product-specific behavior belongs behind adapters rather than insid
 - [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, and public safety
 - [`AGENTS.md`](AGENTS.md): instructions for AI systems working in this repository
 - [`contracts/`](contracts/): provider-neutral machine-readable contracts
-- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, durable run store, and bounded agent loop
+- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, durable run store, bounded agent loop, and durable loop-resume state machine
 - [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
 - [`docs/tool-runtime.md`](docs/tool-runtime.md): tool proposal, policy, approval, execution, and verification boundary
 - [`docs/agent-loop.md`](docs/agent-loop.md): finite multi-step model/tool continuation and stop conditions
+- [`docs/durable-agent-loop.md`](docs/durable-agent-loop.md): persisted loop phases, restart invariants, and durable continuation behavior
 - [`docs/run-state.md`](docs/run-state.md): durable checkpoints, resumable approvals, and recovery-required behavior
 - [`docs/handoffs.md`](docs/handoffs.md): bounded delegation contract
 - [`docs/reconciliation.md`](docs/reconciliation.md): authoritative-state reconciliation
@@ -162,6 +169,6 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, a tested durable approval checkpoint/resume path, and a bounded multi-step agent loop with finite budgets and loop detection. Current CI verifies public-repository integrity, Python compilation, unit tests, and deterministic behavioral evals without requiring provider credentials or live external side effects.
+Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, and a tested durable loop-resume path that preserves budgets, seen actions, tool definitions, and provider identity across an approval interruption. Current CI verifies public-repository integrity, Python compilation, unit tests, and deterministic behavioral evals without requiring provider credentials or live external side effects.
 
-Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", or "safe for autonomous production side effects" require additional evidence for that exact claim.
+Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", "distributed", or "safe for autonomous production side effects" require additional evidence for that exact claim.
