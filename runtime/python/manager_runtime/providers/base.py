@@ -32,13 +32,40 @@ def _validate_tool_definitions(tools: Any) -> None:
             raise TypeError("model request tool input_schema must be an object")
 
 
+def _validate_continuation(continuation: Any) -> None:
+    if not isinstance(continuation, dict):
+        raise TypeError("model request continuation must be an object")
+    prior = continuation.get("prior_response_ref")
+    if not isinstance(prior, str) or not prior:
+        raise ValueError("model request continuation requires prior_response_ref")
+    results = continuation.get("tool_results")
+    if not isinstance(results, list) or not results:
+        raise ValueError("model request continuation requires tool_results")
+    seen: set[str] = set()
+    for result in results:
+        if not isinstance(result, dict):
+            raise TypeError("continuation tool results must be objects")
+        proposal_id = result.get("proposal_id")
+        if not isinstance(proposal_id, str) or not proposal_id:
+            raise ValueError("continuation tool result requires proposal_id")
+        if proposal_id in seen:
+            raise ValueError("continuation tool result proposal_id values must be unique")
+        seen.add(proposal_id)
+        if result.get("status") != "executed":
+            raise ValueError("only executed tool results may continue a model turn")
+        if not isinstance(result.get("output"), str):
+            raise TypeError("continuation tool result output must be text")
+        if "redacted" in result and not isinstance(result["redacted"], bool):
+            raise TypeError("continuation tool result redacted must be boolean")
+
+
 def validate_model_request(request: ModelPayload) -> None:
     required = ("request_id", "model", "input")
     missing = [key for key in required if not request.get(key)]
     if missing:
         raise ValueError(f"model request missing required fields: {', '.join(missing)}")
     if not isinstance(request["input"], str):
-        raise TypeError("model request input must be text in the v1 reference adapter")
+        raise TypeError("model request input must be text in the reference adapter")
     if "instructions" in request and not isinstance(request["instructions"], str):
         raise TypeError("model request instructions must be text")
     if "max_output_tokens" in request:
@@ -47,6 +74,8 @@ def validate_model_request(request: ModelPayload) -> None:
             raise TypeError("max_output_tokens must be a positive integer")
     if "tools" in request:
         _validate_tool_definitions(request["tools"])
+    if "continuation" in request:
+        _validate_continuation(request["continuation"])
 
 
 def validate_model_response(response: ModelPayload) -> None:
