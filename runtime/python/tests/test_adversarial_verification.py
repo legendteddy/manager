@@ -4,8 +4,60 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
+import adversarial_verification_suite as _suite
 from adversarial_verification_suite import *  # noqa: F401,F403
 from manager_runtime.state import SQLITE_STATE_SCHEMA_VERSION, RunStateError, SQLiteRunStore
+from manager_runtime.tools.base import tool_request_fingerprint
+
+
+def _valid_run_state(status: str = "running", revision: int = 1) -> dict:
+    state = {
+        "run_id": "run:state-machine",
+        "task_id": "task:state-machine",
+        "status": status,
+        "revision": revision,
+        "created_at": "2026-10-08T00:00:00Z",
+        "updated_at": f"2026-10-08T00:00:{revision:02d}Z",
+        "pending_action": None,
+        "recovery_reason": None,
+        "extensions": {},
+    }
+    if status in {"waiting_approval", "executing"}:
+        request = {
+            "request_id": "tool-request:state-machine",
+            "run_id": "run:state-machine",
+            "tool_name": "lookup",
+            "arguments": {"value": "x"},
+            "target": "synthetic-target",
+            "proposed_by": "model",
+            "proposal_ref": "proposal:state-machine",
+        }
+        state["pending_action"] = {
+            "tool_request": request,
+            "approval": {
+                "approval_id": "approval:state-machine",
+                "run_id": "run:state-machine",
+                "action": "lookup",
+                "target": "synthetic-target",
+                "status": "approved" if status == "executing" else "pending",
+                "materiality": "material",
+                "reason": "Synthetic transition-matrix fixture.",
+                "issued_at": "2026-10-08T00:00:00Z",
+                "action_fingerprint": tool_request_fingerprint(request),
+            },
+            "tool_definition_fingerprint": "synthetic-tool-definition-v1",
+            "authorization_context": {"scope_authorized": True},
+        }
+    if status == "recovery_required":
+        state["recovery_reason"] = "Synthetic uncertain outcome."
+    return state
+
+
+# The Worker08 suite predates P2's complete live-approval invariant. Keep the
+# adversarial transition matrix intact, but feed it states that are valid at
+# the current persistence boundary instead of weakening production validation.
+_suite.run_state = _valid_run_state
+run_state = _valid_run_state
 
 
 def _current_runtime_sqlite_connection(path: Path) -> sqlite3.Connection:
