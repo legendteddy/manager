@@ -6,6 +6,7 @@ It is not the canonical architecture definition and does not imply production re
 
 from .agent_loop import run_bounded_agent_loop
 from .engine import run
+from .mcp import OfficialMCPClient, register_mcp_bindings
 from .orchestrator import run_with_model, run_with_model_and_tools
 from .state import (
     resolve_recovery_required,
@@ -22,6 +23,8 @@ __all__ = [
     "run_durable_agent_loop",
     "resume_durable_agent_loop",
     "resolve_recovery_required",
+    "register_mcp_bindings",
+    "OfficialMCPClient",
     "ToolRegistry",
     "execute_tool_request",
 ]
