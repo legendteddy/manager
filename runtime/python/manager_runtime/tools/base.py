@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
@@ -21,6 +22,32 @@ CONSEQUENTIAL_CLASSES = {
     "external_commitment",
     "sensitive_destructive",
 }
+
+_TOOL_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+_TOOL_DEFINITION_KEYS = {
+    "name",
+    "version",
+    "description",
+    "side_effect_class",
+    "input_schema",
+    "requires_verification",
+    "sensitive_output",
+    "extensions",
+}
+_TOOL_REQUEST_KEYS = {
+    "request_id",
+    "run_id",
+    "tool_name",
+    "arguments",
+    "target",
+    "proposed_by",
+    "proposal_ref",
+    "extensions",
+}
+_MAX_SCHEMA_DEPTH = 64
+_MAX_SCHEMA_NODES = 10_000
+_MAX_ARGUMENT_DEPTH = 64
+_MAX_ARGUMENT_NODES = 100_000
 
 _SCHEMA_TYPES = {"string", "integer", "number", "boolean", "object", "array", "null"}
 _SCHEMA_ANNOTATIONS = {
@@ -79,7 +106,9 @@ class ToolRegistry:
     """Trusted registry for tool metadata and implementations.
 
     Side-effect metadata is owned by this registry and is never taken from a
-    model-generated proposal.
+    model-generated proposal. Definition objects are isolated at ingress and
+    egress so mutable caller-owned dictionaries cannot rewrite trusted policy
+    or schema after registration.
     """
 
     def __init__(self) -> None:
@@ -90,10 +119,13 @@ class ToolRegistry:
         name = definition["name"]
         if name in self._tools:
             raise ToolRuntimeError(f"tool already registered: {name}")
-        self._tools[name] = RegisteredTool(dict(definition), adapter)
+        self._tools[name] = RegisteredTool(deepcopy(definition), adapter)
 
     def get(self, name: str) -> RegisteredTool | None:
-        return self._tools.get(name)
+        registered = self._tools.get(name)
+        if registered is None:
+            return None
+        return RegisteredTool(deepcopy(registered.definition), registered.adapter)
 
     def model_definitions(self, allowed_tools: list[str] | None = None) -> list[ToolPayload]:
         names = allowed_tools if allowed_tools is not None else sorted(self._tools)
@@ -107,7 +139,7 @@ class ToolRegistry:
                 {
                     "name": definition["name"],
                     "description": definition["description"],
-                    "input_schema": definition["input_schema"],
+                    "input_schema": deepcopy(definition["input_schema"]),
                 }
             )
         return definitions
@@ -115,7 +147,11 @@ class ToolRegistry:
 
 def _stable_digest(value: Any) -> str:
     encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
@@ -160,15 +196,33 @@ def _schema_types(value: Any, path: str) -> list[str]:
     return values
 
 
-def validate_supported_schema(schema: dict[str, Any], *, path: str = "$") -> None:
+def validate_supported_schema(
+    schema: dict[str, Any],
+    *,
+    path: str = "$",
+    _depth: int = 0,
+    _nodes: list[int] | None = None,
+) -> None:
     """Reject schema features this zero-dependency runtime cannot enforce.
 
     Manager must never advertise a constraint and then silently ignore it at the
     execution boundary. This validator intentionally supports a conservative
-    JSON-Schema subset and fails closed for every other keyword.
+    JSON-Schema subset and fails closed for every other keyword. Depth and node
+    budgets keep hostile schemas from turning validation into recursion or
+    memory-exhaustion attacks.
     """
     if not isinstance(schema, dict):
         raise TypeError(f"tool input schema {path} must be an object")
+    if _depth > _MAX_SCHEMA_DEPTH:
+        raise ValueError(
+            f"tool input schema exceeds maximum nesting depth of {_MAX_SCHEMA_DEPTH}"
+        )
+    nodes = _nodes if _nodes is not None else [0]
+    nodes[0] += 1
+    if nodes[0] > _MAX_SCHEMA_NODES:
+        raise ValueError(
+            f"tool input schema exceeds maximum node count of {_MAX_SCHEMA_NODES}"
+        )
 
     unsupported = sorted(set(schema) - _SUPPORTED_SCHEMA_KEYS)
     if unsupported:
@@ -188,7 +242,12 @@ def validate_supported_schema(schema: dict[str, Any], *, path: str = "$") -> Non
                 raise TypeError(f"tool input schema {path}.properties keys must be strings")
             if not isinstance(rule, dict):
                 raise TypeError(f"tool input schema {path}.properties.{key} must be an object")
-            validate_supported_schema(rule, path=f"{path}.{key}")
+            validate_supported_schema(
+                rule,
+                path=f"{path}.{key}",
+                _depth=_depth + 1,
+                _nodes=nodes,
+            )
 
     required = schema.get("required")
     if required is not None:
@@ -211,7 +270,12 @@ def validate_supported_schema(schema: dict[str, Any], *, path: str = "$") -> Non
     if "items" in schema:
         if not isinstance(schema["items"], dict):
             raise TypeError(f"tool input schema {path}.items must be an object")
-        validate_supported_schema(schema["items"], path=f"{path}[]")
+        validate_supported_schema(
+            schema["items"],
+            path=f"{path}[]",
+            _depth=_depth + 1,
+            _nodes=nodes,
+        )
 
     if "enum" in schema:
         enum = schema["enum"]
@@ -253,6 +317,8 @@ def validate_supported_schema(schema: dict[str, Any], *, path: str = "$") -> Non
 
 
 def validate_tool_definition(definition: ToolPayload) -> None:
+    if not isinstance(definition, dict):
+        raise TypeError("tool definition must be an object")
     required = (
         "name",
         "description",
@@ -263,8 +329,16 @@ def validate_tool_definition(definition: ToolPayload) -> None:
     missing = [key for key in required if key not in definition]
     if missing:
         raise ValueError(f"tool definition missing required fields: {', '.join(missing)}")
-    if not isinstance(definition["name"], str) or not definition["name"]:
-        raise TypeError("tool name must be non-empty text")
+    unknown = sorted(set(definition) - _TOOL_DEFINITION_KEYS)
+    if unknown:
+        raise ValueError(f"tool definition has unknown fields: {', '.join(unknown)}")
+
+    name = definition["name"]
+    if not isinstance(name, str) or not _TOOL_NAME.fullmatch(name):
+        raise ValueError("tool name is invalid")
+    description = definition["description"]
+    if not isinstance(description, str) or not description:
+        raise ValueError("tool description must be non-empty text")
     if definition["side_effect_class"] not in SIDE_EFFECT_CLASSES:
         raise ValueError("tool side_effect_class is not normalized")
     if not isinstance(definition["input_schema"], dict):
@@ -274,26 +348,60 @@ def validate_tool_definition(definition: ToolPayload) -> None:
     validate_supported_schema(definition["input_schema"])
     if not isinstance(definition["requires_verification"], bool):
         raise TypeError("requires_verification must be boolean")
+    if "sensitive_output" in definition and not isinstance(definition["sensitive_output"], bool):
+        raise TypeError("sensitive_output must be boolean")
+    if "extensions" in definition and not isinstance(definition["extensions"], dict):
+        raise TypeError("tool definition extensions must be an object")
+    if "version" in definition:
+        version = definition["version"]
+        if not isinstance(version, str) or not version.strip():
+            raise ValueError("tool version must be non-empty text")
+
+    try:
+        json.dumps(
+            definition,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise TypeError("tool definition must be JSON-compatible") from exc
+
     if (
         definition["side_effect_class"] in CONSEQUENTIAL_CLASSES
         and not definition["requires_verification"]
     ):
         raise ValueError("consequential tools must require verification")
-    if definition["side_effect_class"] in CONSEQUENTIAL_CLASSES:
-        version = definition.get("version")
-        if not isinstance(version, str) or not version.strip():
-            raise ValueError("consequential tools must declare a non-empty version")
+    if definition["side_effect_class"] in CONSEQUENTIAL_CLASSES and "version" not in definition:
+        raise ValueError("consequential tools must declare a non-empty version")
 
 
 def validate_tool_request(request: ToolPayload) -> None:
+    if not isinstance(request, dict):
+        raise TypeError("tool request must be an object")
     required = ("request_id", "run_id", "tool_name", "arguments", "proposed_by")
     missing = [key for key in required if key not in request]
     if missing:
         raise ValueError(f"tool request missing required fields: {', '.join(missing)}")
+    unknown = sorted(set(request) - _TOOL_REQUEST_KEYS)
+    if unknown:
+        raise ValueError(f"tool request has unknown fields: {', '.join(unknown)}")
+    for key in ("request_id", "run_id"):
+        if not isinstance(request[key], str) or not request[key]:
+            raise ValueError(f"tool request {key} must be non-empty text")
+    tool_name = request["tool_name"]
+    if not isinstance(tool_name, str) or not _TOOL_NAME.fullmatch(tool_name):
+        raise ValueError("tool request tool_name is invalid")
     if not isinstance(request["arguments"], dict):
         raise TypeError("tool request arguments must be an object")
     if request["proposed_by"] not in {"model", "primary_agent", "human", "system"}:
         raise ValueError("tool request proposed_by is not normalized")
+    for key in ("target", "proposal_ref"):
+        if key in request and request[key] is not None and not isinstance(request[key], str):
+            raise TypeError(f"tool request {key} must be text or null")
+    if "extensions" in request and not isinstance(request["extensions"], dict):
+        raise TypeError("tool request extensions must be an object")
 
 
 def _matches_type(value: Any, expected: str) -> bool:
@@ -316,6 +424,72 @@ def _matches_type(value: Any, expected: str) -> bool:
     if expected == "null":
         return value is None
     return False
+
+
+def _json_identity(value: Any) -> Any:
+    if value is None:
+        return ("null",)
+    if isinstance(value, bool):
+        return ("boolean", value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return ("number", value)
+    if isinstance(value, str):
+        return ("string", value)
+    if isinstance(value, list):
+        return ("array", tuple(_json_identity(item) for item in value))
+    if isinstance(value, dict):
+        return (
+            "object",
+            tuple(sorted((key, _json_identity(item)) for key, item in value.items())),
+        )
+    raise TypeError("tool arguments must contain only JSON-compatible values")
+
+
+def _validate_json_value(
+    value: Any,
+    path: str,
+    *,
+    depth: int = 0,
+    nodes: list[int] | None = None,
+) -> None:
+    if depth > _MAX_ARGUMENT_DEPTH:
+        raise ValueError(
+            f"tool arguments exceed maximum nesting depth of {_MAX_ARGUMENT_DEPTH}"
+        )
+    budget = nodes if nodes is not None else [0]
+    budget[0] += 1
+    if budget[0] > _MAX_ARGUMENT_NODES:
+        raise ValueError(
+            f"tool arguments exceed maximum node count of {_MAX_ARGUMENT_NODES}"
+        )
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"tool argument {path} must be a finite number")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value(
+                item,
+                f"{path}[{index}]",
+                depth=depth + 1,
+                nodes=budget,
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"tool argument {path} object keys must be strings")
+            _validate_json_value(
+                item,
+                f"{path}.{key}",
+                depth=depth + 1,
+                nodes=budget,
+            )
+        return
+    raise TypeError(f"tool argument {path} must be JSON-compatible")
 
 
 def _validate_value(value: Any, schema: dict[str, Any], path: str) -> None:
@@ -383,9 +557,12 @@ def _validate_value(value: Any, schema: dict[str, Any], path: str) -> None:
         if "maxItems" in schema and len(value) > schema["maxItems"]:
             raise ValueError(f"tool argument {path} has more than maxItems")
         if schema.get("uniqueItems"):
-            for index, item in enumerate(value):
-                if any(item == previous for previous in value[:index]):
+            seen: set[Any] = set()
+            for item in value:
+                identity = _json_identity(item)
+                if identity in seen:
                     raise ValueError(f"tool argument {path} must contain unique items")
+                seen.add(identity)
         item_schema = schema.get("items")
         if isinstance(item_schema, dict):
             for index, item in enumerate(value):
@@ -397,7 +574,9 @@ def validate_arguments(arguments: dict[str, Any], schema: dict[str, Any]) -> Non
 
     Any unsupported schema feature is rejected when the tool is registered, so
     every constraint a registered tool advertises is enforced here before its
-    adapter can execute.
+    adapter can execute. Argument depth and node budgets bound adversarial JSON
+    payloads before recursive schema validation begins.
     """
     validate_supported_schema(schema)
+    _validate_json_value(arguments, "$")
     _validate_value(arguments, schema, "$")
