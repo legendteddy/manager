@@ -66,6 +66,17 @@ class CountingMapping(Mapping):
         return "value"
 
 
+class ExplosiveMapping(Mapping):
+    def __len__(self):  # pragma: no cover - must never execute
+        raise AssertionError("telemetry must not call custom mapping hooks")
+
+    def __iter__(self):  # pragma: no cover - must never execute
+        raise AssertionError("telemetry must not call custom mapping hooks")
+
+    def __getitem__(self, key):  # pragma: no cover - must never execute
+        raise AssertionError("telemetry must not call custom mapping hooks")
+
+
 class SREObservabilityTests(unittest.TestCase):
     def test_redaction_hides_sensitive_fields_and_tokens(self):
         sink = InMemoryTelemetrySink(32)
@@ -86,11 +97,28 @@ class SREObservabilityTests(unittest.TestCase):
         self.assertIn("[REDACTED]", text)
         self.assertEqual(event.attributes["nested"]["safe"], "ok")
 
-    def test_redaction_stops_large_mapping_traversal(self):
+    def test_custom_mappings_are_not_traversed(self):
         mapping = CountingMapping(1_000_000)
         result = redact(mapping)
-        self.assertLessEqual(mapping.visits, 65)
-        self.assertTrue(result["_truncated_items"])
+        self.assertEqual(mapping.visits, 0)
+        self.assertEqual(result, "<CountingMapping>")
+
+    def test_hostile_container_hooks_cannot_break_telemetry(self):
+        sink = InMemoryTelemetrySink(8)
+        telemetry = SafeTelemetry(sink)
+        hostile = ExplosiveMapping()
+        telemetry.event("run.started", attributes=hostile)
+        telemetry.metric("manager_active_runs", "gauge", 1, labels=hostile)
+        with telemetry.span("run.span", labels=hostile):
+            pass
+        records = sink.snapshot()["records"]
+        self.assertEqual(len(records), 3)
+        event = records[0][1]
+        metric = records[1][1]
+        span = records[2][1]
+        self.assertEqual(event.attributes, {"value": "<ExplosiveMapping>"})
+        self.assertEqual(metric.labels, {})
+        self.assertEqual(span.labels, {})
 
     def test_hostile_objects_never_run_string_methods(self):
         sink = InMemoryTelemetrySink(8)
