@@ -31,10 +31,18 @@ Every new tool proposal re-enters the same policy, authorization, approval, and 
 The reference loop requires explicit finite budgets:
 
 - `max_model_steps` limits model calls, including the initial call;
-- `max_tool_calls` limits governed tool executions/proposals processed by the loop;
+- `max_tool_calls` limits governed tool proposals processed by the loop;
 - `max_tool_result_chars` bounds each serialized tool result sent back to the model.
 
 If a model proposes a batch that would exceed the remaining tool-call budget, none of that over-budget batch is executed.
+
+## Batch behavior
+
+Multiple `analysis`/`read` proposals may be processed in one provider turn when they remain within budget.
+
+If a multi-tool batch contains any consequential tool (`reversible_write`, `external_commitment`, or `sensitive_destructive`), the reference runtime blocks the batch before **any** tool in that batch executes. Consequential actions must be serialized into their own model turn so approval, target, verification, and interruption semantics remain unambiguous.
+
+Unknown or unexposed tools also cause multi-tool batch preflight to stop before execution.
 
 ## Loop detection
 
@@ -71,6 +79,8 @@ The reference loop stops when:
 - the model-step budget is exhausted;
 - the tool-call budget is exhausted;
 - an exact tool proposal repeats;
+- a consequential action appears inside a multi-tool provider batch;
+- a multi-tool batch contains an unknown or unexposed tool;
 - the provider does not return a usable continuation reference;
 - a tool requires approval;
 - policy blocks a tool;
@@ -85,7 +95,7 @@ Stage 7 does not claim:
 
 - durable resumption of the whole model/tool loop;
 - exactly-once external side effects;
-- parallel tool execution;
+- parallel consequential tool execution;
 - automatic side-effect retry;
 - provider failover;
 - distributed loop coordination;
