@@ -6,6 +6,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from .base import RunState, RunStateConflict, RunStateError
+from .transitions import validate_run_state_shape, validate_run_state_transition
 
 
 class SQLiteRunStore:
@@ -39,22 +40,26 @@ class SQLiteRunStore:
 
     @staticmethod
     def _encoded(state: RunState) -> str:
+        validate_run_state_shape(state)
         return json.dumps(state, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
     def _decoded(payload: str) -> RunState:
-        value = json.loads(payload)
+        try:
+            value = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RunStateError("persisted run state is corrupted JSON") from exc
         if not isinstance(value, dict):
             raise RunStateError("persisted run state must decode to an object")
+        validate_run_state_shape(value)
         return value
 
     def create(self, state: RunState) -> RunState:
         candidate = deepcopy(state)
         if candidate.get("revision") != 1:
             raise RunStateError("new run state must start at revision 1")
-        run_id = candidate.get("run_id")
-        if not isinstance(run_id, str) or not run_id:
-            raise RunStateError("run state requires a non-empty run_id")
+        validate_run_state_shape(candidate)
+        run_id = candidate["run_id"]
         try:
             with self._connect() as connection:
                 connection.execute(
@@ -78,17 +83,25 @@ class SQLiteRunStore:
         self, run_id: str, expected_revision: int, state: RunState
     ) -> RunState:
         candidate = deepcopy(state)
-        new_revision = candidate.get("revision")
-        if new_revision != expected_revision + 1:
-            raise RunStateError(
-                "replacement run state revision must be expected_revision + 1"
-            )
         if candidate.get("run_id") != run_id:
             raise RunStateError("replacement run_id must match the stored run")
 
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT revision, state_json FROM manager_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise RunStateConflict(f"run does not exist: {run_id}")
+            if row["revision"] != expected_revision:
+                connection.rollback()
+                raise RunStateConflict(
+                    f"run revision changed before update: {run_id}@{expected_revision}"
+                )
+            previous = self._decoded(row["state_json"])
+            validate_run_state_transition(previous, candidate)
             cursor = connection.execute(
                 """
                 UPDATE manager_runs
@@ -96,7 +109,7 @@ class SQLiteRunStore:
                 WHERE run_id = ? AND revision = ?
                 """,
                 (
-                    new_revision,
+                    candidate["revision"],
                     self._encoded(candidate),
                     run_id,
                     expected_revision,
