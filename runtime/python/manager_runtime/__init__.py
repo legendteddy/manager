@@ -7,7 +7,11 @@ It is not the canonical architecture definition and does not imply production re
 from .agent_loop import run_bounded_agent_loop
 from .engine import run
 from .orchestrator import run_with_model, run_with_model_and_tools
-from .state import resume_durable_agent_loop, run_durable_agent_loop
+from .state import (
+    resolve_recovery_required,
+    resume_durable_agent_loop,
+    run_durable_agent_loop,
+)
 from .tools import ToolRegistry, execute_tool_request
 
 __all__ = [
@@ -17,6 +21,7 @@ __all__ = [
     "run_bounded_agent_loop",
     "run_durable_agent_loop",
     "resume_durable_agent_loop",
+    "resolve_recovery_required",
     "ToolRegistry",
     "execute_tool_request",
 ]
