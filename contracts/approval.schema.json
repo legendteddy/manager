@@ -18,6 +18,7 @@
     "recovery": {"type": "string"},
     "issued_at": {"type": "string", "format": "date-time"},
     "resolved_at": {"type": ["string", "null"], "format": "date-time"},
+    "resolved_by": {"type": ["string", "null"]},
     "approved_by": {"type": ["string", "null"]},
     "action_fingerprint": {"type": "string", "description": "Stable digest or equivalent identity for the reviewed target plus material parameters."},
     "extensions": {"type": "object", "additionalProperties": true}
