@@ -1,0 +1,63 @@
+name: Deployment reference
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  container-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Check out event revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Validate Compose example
+        shell: bash
+        run: docker compose -f deploy/compose.example.yml config >/tmp/manager-compose.yml
+
+      - name: Build reference container
+        shell: bash
+        run: docker build --file deploy/Dockerfile --tag manager-deployment:ci .
+
+      - name: Verify non-root runtime identity
+        shell: bash
+        run: |
+          docker run --rm --entrypoint python manager-deployment:ci -c \
+            'import os; assert os.getuid() == 10001; assert os.getgid() == 10001'
+
+      - name: Validate production config on a read-only root filesystem
+        shell: bash
+        run: |
+          docker run --rm \
+            --read-only \
+            --tmpfs /var/lib/manager/state:uid=10001,gid=10001,mode=0750,size=64m \
+            --tmpfs /var/run/manager:uid=10001,gid=10001,mode=0750,size=64m \
+            --env MANAGER_DEPLOY_ENV=production \
+            --env MANAGER_DEPLOY_BIND_HOST=0.0.0.0 \
+            --env MANAGER_DEPLOY_BIND_PORT=8080 \
+            --env MANAGER_DEPLOY_STATE_BACKEND=sqlite \
+            --env MANAGER_DEPLOY_SQLITE_PATH=/var/lib/manager/state/manager.sqlite3 \
+            --env MANAGER_DEPLOY_INSTANCE_COUNT=1 \
+            --env MANAGER_DEPLOY_MAX_CONCURRENCY=8 \
+            --env MANAGER_DEPLOY_QUEUE_LIMIT=64 \
+            --env MANAGER_DEPLOY_REQUEST_TIMEOUT_SECONDS=60 \
+            --env MANAGER_DEPLOY_PROVIDER_TIMEOUT_SECONDS=45 \
+            --env MANAGER_DEPLOY_MCP_TIMEOUT_SECONDS=30 \
+            --env MANAGER_DEPLOY_GRACEFUL_SHUTDOWN_SECONDS=20 \
+            --env MANAGER_DEPLOY_TLS_MODE=external \
+            --env MANAGER_DEPLOY_TELEMETRY_MODE=json_stdout \
+            --env MANAGER_DEPLOY_DATA_DIR=/var/lib/manager/state \
+            --env MANAGER_DEPLOY_TMP_DIR=/var/run/manager \
+            --env MANAGER_DEPLOY_SECRETS_DIR=/run/secrets \
+            --env MANAGER_DEPLOY_READ_ONLY_ROOT=true \
+            manager-deployment:ci validate-config
