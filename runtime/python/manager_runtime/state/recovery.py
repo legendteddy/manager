@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -7,7 +8,7 @@ from typing import Any
 from ..agent_loop import _serialize_tool_output
 from ..tools.base import ToolRegistry, tool_definition_fingerprint, tool_request_fingerprint
 from ..tools.runtime import execute_tool_request
-from .base import RunState, RunStateError, RunStore
+from .base import RunState, RunStateError, RunStore, require_coordinated_store
 from .checkpoint_versions import migrate_agent_loop_checkpoint
 
 AGENT_LOOP_EXTENSION = "agent_loop"
@@ -18,11 +19,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _recovery_worker_identity(value: str | None) -> str:
+    if value is None:
+        return f"recovery-worker:{uuid.uuid4().hex}"
+    if not isinstance(value, str) or not value.strip():
+        raise RunStateError("worker_id must be non-empty text when supplied")
+    if len(value) > 256:
+        raise RunStateError("worker_id is too long")
+    return value
+
+
 def _validate_resolution(run_id: str, resolution: dict[str, Any]) -> None:
-    required = ("resolution_id", "run_id", "decision", "decided_by", "decided_at", "evidence")
+    required = (
+        "resolution_id",
+        "run_id",
+        "decision",
+        "decided_by",
+        "decided_at",
+        "evidence",
+    )
     missing = [key for key in required if key not in resolution]
     if missing:
-        raise RunStateError(f"recovery resolution missing required fields: {', '.join(missing)}")
+        raise RunStateError(
+            f"recovery resolution missing required fields: {', '.join(missing)}"
+        )
     if resolution["run_id"] != run_id:
         raise RunStateError("recovery resolution run_id does not match the durable run")
     if resolution["decision"] not in RECOVERY_DECISIONS:
@@ -48,7 +68,9 @@ def _validated_authorization_subset(
     return result
 
 
-def _current_pending(state: RunState, registry: ToolRegistry) -> tuple[dict[str, Any], Any]:
+def _current_pending(
+    state: RunState, registry: ToolRegistry
+) -> tuple[dict[str, Any], Any]:
     pending = state.get("pending_action")
     if not isinstance(pending, dict):
         raise RunStateError("recovery_required state is missing pending_action")
@@ -57,10 +79,14 @@ def _current_pending(state: RunState, registry: ToolRegistry) -> tuple[dict[str,
         raise RunStateError("recovery_required state is missing its tool request")
     registered = registry.get(request.get("tool_name"))
     if registered is None:
-        raise RunStateError("recovery cannot proceed because the registered tool is unavailable")
+        raise RunStateError(
+            "recovery cannot proceed because the registered tool is unavailable"
+        )
     stored_fingerprint = pending.get("tool_definition_fingerprint")
     if stored_fingerprint != tool_definition_fingerprint(registered.definition):
-        raise RunStateError("recovery cannot proceed because the tool definition changed")
+        raise RunStateError(
+            "recovery cannot proceed because the tool definition changed"
+        )
     return request, registered
 
 
@@ -73,7 +99,9 @@ def _replacement(state: RunState, resolution: dict[str, Any]) -> RunState:
     return value
 
 
-def _trace_recovery(state: RunState, decision: str, evidence: str, *, running: bool) -> None:
+def _trace_recovery(
+    state: RunState, decision: str, evidence: str, *, running: bool
+) -> None:
     trace = state.get("trace_snapshot")
     if not isinstance(trace, dict):
         return
@@ -95,7 +123,9 @@ def _fresh_approval_after_confirmed_no_effect(
 ) -> RunState:
     request, registered = _current_pending(state, registry)
     fresh_request = deepcopy(request)
-    fresh_request["request_id"] = f"{request['request_id']}:recovery:{state['revision'] + 1}"
+    fresh_request["request_id"] = (
+        f"{request['request_id']}:recovery:{state['revision'] + 1}"
+    )
 
     task = deepcopy(state.get("task") or {})
     if not isinstance(task.get("classification"), dict):
@@ -107,7 +137,9 @@ def _fresh_approval_after_confirmed_no_effect(
     )
     context["human_intent_confirmed"] = False
     result = execute_tool_request(task, fresh_request, registry, context)
-    if result.get("status") != "approval_required" or not isinstance(result.get("approval"), dict):
+    if result.get("status") != "approval_required" or not isinstance(
+        result.get("approval"), dict
+    ):
         raise RunStateError(
             "fresh recovery approval could not be created; current scope/target authorization must be re-established first"
         )
@@ -117,16 +149,24 @@ def _fresh_approval_after_confirmed_no_effect(
     value["pending_action"] = {
         "tool_request": deepcopy(fresh_request),
         "approval": deepcopy(result["approval"]),
-        "tool_definition_fingerprint": tool_definition_fingerprint(registered.definition),
+        "tool_definition_fingerprint": tool_definition_fingerprint(
+            registered.definition
+        ),
         "authorization_context": context,
     }
     value["last_tool_result"] = deepcopy(result)
 
     extensions = value.get("extensions")
-    if isinstance(extensions, dict) and isinstance(extensions.get(AGENT_LOOP_EXTENSION), dict):
-        checkpoint = migrate_agent_loop_checkpoint(extensions[AGENT_LOOP_EXTENSION])
+    if isinstance(extensions, dict) and isinstance(
+        extensions.get(AGENT_LOOP_EXTENSION), dict
+    ):
+        checkpoint = migrate_agent_loop_checkpoint(
+            extensions[AGENT_LOOP_EXTENSION]
+        )
         checkpoint["phase"] = "waiting_approval"
-        checkpoint["pending_request_fingerprint"] = tool_request_fingerprint(fresh_request)
+        checkpoint["pending_request_fingerprint"] = tool_request_fingerprint(
+            fresh_request
+        )
         value["extensions"][AGENT_LOOP_EXTENSION] = checkpoint
 
     approval = value["pending_action"]["approval"]
@@ -147,7 +187,9 @@ def _fresh_approval_after_confirmed_no_effect(
     if isinstance(result_snapshot, dict):
         result_snapshot["status"] = "blocked"
         result_snapshot["owner_decision_required"] = True
-        result_snapshot["decision_request"] = "Review the fresh recovery approval request."
+        result_snapshot["decision_request"] = (
+            "Review the fresh recovery approval request."
+        )
     return value
 
 
@@ -184,20 +226,33 @@ def _confirmed_success(
 
     extensions = value.get("extensions")
     checkpoint = None
-    if isinstance(extensions, dict) and isinstance(extensions.get(AGENT_LOOP_EXTENSION), dict):
-        checkpoint = migrate_agent_loop_checkpoint(extensions[AGENT_LOOP_EXTENSION])
+    if isinstance(extensions, dict) and isinstance(
+        extensions.get(AGENT_LOOP_EXTENSION), dict
+    ):
+        checkpoint = migrate_agent_loop_checkpoint(
+            extensions[AGENT_LOOP_EXTENSION]
+        )
 
     if checkpoint is None:
         value["status"] = "completed"
-        _trace_recovery(value, "confirmed_succeeded", resolution["evidence"], running=False)
+        _trace_recovery(
+            value,
+            "confirmed_succeeded",
+            resolution["evidence"],
+            running=False,
+        )
         return value
 
     proposal_id = checkpoint.get("pending_proposal_id")
     if not isinstance(proposal_id, str) or not proposal_id:
-        raise RunStateError("durable loop recovery is missing pending proposal identity")
+        raise RunStateError(
+            "durable loop recovery is missing pending proposal identity"
+        )
     expected = checkpoint.get("pending_request_fingerprint")
     if expected != tool_request_fingerprint(request):
-        raise RunStateError("durable loop recovery request identity no longer matches its checkpoint")
+        raise RunStateError(
+            "durable loop recovery request identity no longer matches its checkpoint"
+        )
 
     serialized, continuation_redacted = _serialize_tool_output(
         result, int(checkpoint["max_tool_result_chars"])
@@ -216,7 +271,9 @@ def _confirmed_success(
     checkpoint["pending_request_fingerprint"] = None
     value["extensions"][AGENT_LOOP_EXTENSION] = checkpoint
     value["status"] = "running"
-    _trace_recovery(value, "confirmed_succeeded", resolution["evidence"], running=True)
+    _trace_recovery(
+        value, "confirmed_succeeded", resolution["evidence"], running=True
+    )
     result_snapshot = value.get("result_snapshot")
     if isinstance(result_snapshot, dict):
         result_snapshot["status"] = "partial"
@@ -232,44 +289,69 @@ def resolve_recovery_required(
     resolution: dict[str, Any],
     *,
     current_authorization: dict[str, Any] | None = None,
+    worker_id: str | None = None,
+    lease_ttl_seconds: int = 30,
 ) -> RunState:
-    """Resolve `recovery_required` only from explicit external evidence.
+    """Resolve ``recovery_required`` only under a fenced lease and evidence.
 
-    `confirmed_succeeded` records an externally verified successful effect and,
-    for a durable agent loop, returns the checkpoint to `continuation_ready`.
-    `confirmed_not_executed` creates a fresh request and approval identity. A
-    recovery decision may request additional redaction but can never weaken a
-    registered tool's sensitive-output policy.
+    A recovery decision never executes the uncertain tool action. Resolution is
+    serialized with normal durable execution through the same backend lease so
+    competing operators, stale workers, and ordinary resume paths cannot commit
+    conflicting recovery state.
+
+    ``confirmed_succeeded`` records externally verified success and, for a
+    durable loop, returns the checkpoint to ``continuation_ready``.
+    ``confirmed_not_executed`` creates a fresh request and approval identity.
+    The old request identity is never reused for a new execution attempt.
     """
     _validate_resolution(run_id, resolution)
-    state = store.load(run_id)
-    if state is None:
-        raise RunStateError(f"unknown run: {run_id}")
-    if state["status"] != "recovery_required":
-        raise RunStateError(f"run is not recovery_required: {state['status']}")
-
-    decision = resolution["decision"]
-    if decision == "confirmed_succeeded":
-        value = _confirmed_success(state, registry, resolution)
-    elif decision == "confirmed_not_executed":
-        value = _fresh_approval_after_confirmed_no_effect(
-            state,
-            registry,
-            resolution,
-            current_authorization or {},
-        )
-    else:
-        value = _replacement(state, resolution)
-        value["status"] = "cancelled"
-        trace = value.get("trace_snapshot")
-        if isinstance(trace, dict):
-            trace["status"] = "cancelled"
-            trace.setdefault("events", []).append(
-                {
-                    "event_type": "recovery",
-                    "status": "cancelled",
-                    "summary": "Recovery was explicitly cancelled; Manager did not retry the uncertain action.",
-                }
+    coordinated = require_coordinated_store(store)
+    lease = coordinated.acquire_lease(
+        run_id,
+        _recovery_worker_identity(worker_id),
+        ttl_seconds=lease_ttl_seconds,
+    )
+    try:
+        state = coordinated.load(run_id)
+        if state is None:
+            raise RunStateError(f"unknown run: {run_id}")
+        if state["status"] != "recovery_required":
+            raise RunStateError(
+                f"run is not recovery_required: {state['status']}"
             )
 
-    return store.compare_and_swap(run_id, state["revision"], value)
+        decision = resolution["decision"]
+        if decision == "confirmed_succeeded":
+            value = _confirmed_success(state, registry, resolution)
+        elif decision == "confirmed_not_executed":
+            value = _fresh_approval_after_confirmed_no_effect(
+                state,
+                registry,
+                resolution,
+                current_authorization or {},
+            )
+        else:
+            value = _replacement(state, resolution)
+            value["status"] = "cancelled"
+            trace = value.get("trace_snapshot")
+            if isinstance(trace, dict):
+                trace["status"] = "cancelled"
+                trace.setdefault("events", []).append(
+                    {
+                        "event_type": "recovery",
+                        "status": "cancelled",
+                        "summary": "Recovery was explicitly cancelled; Manager did not retry the uncertain action.",
+                    }
+                )
+
+        return coordinated.fenced_compare_and_swap(
+            run_id,
+            state["revision"],
+            value,
+            lease=lease,
+        )
+    finally:
+        try:
+            coordinated.release_lease(lease)
+        except RunStateError:
+            pass
