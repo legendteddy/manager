@@ -2,7 +2,7 @@
 
 Manager treats Model Context Protocol (MCP) as an interoperability adapter, not as an authority boundary.
 
-The Stage 10 reference path lets an application discover an MCP server's tools and bind an explicit subset into Manager's trusted `ToolRegistry`. The MCP server can describe capabilities, but it cannot decide how Manager classifies, authorizes, approves, verifies, or exposes them.
+The reference path lets an application discover an MCP server's tools and bind an explicit subset into Manager's trusted `ToolRegistry`. The MCP server can describe capabilities, but it cannot decide how Manager classifies, authorizes, approves, verifies, or exposes them.
 
 ## Trust model
 
@@ -46,6 +46,18 @@ If a configured remote tool disappears, duplicates a name, or changes its input 
 
 The effective registered tool version incorporates the configured server identity, remote tool name, and discovered schema fingerprint. Durable checkpoints therefore detect MCP binding drift before resumed consequential execution.
 
+## Execution-time revalidation
+
+Registration does not permanently trust a remote capability.
+
+Immediately before an MCP-backed tool executes, the reference adapter re-discovers the selected remote tool and verifies:
+
+1. the logical server identity still matches the configured binding;
+2. the remote tool still exists exactly once;
+3. its input-schema fingerprint still matches the fingerprint reviewed at registration.
+
+A mismatch stops before `tools/call`. This closes the gap where an MCP server changes after registration but before execution.
+
 ## Execution
 
 After registration, MCP-backed tools use the same governed tool runtime as native adapters:
@@ -60,6 +72,8 @@ trusted ToolRegistry metadata
 argument validation
       ↓
 scope / intent / target / approval policy
+      ↓
+MCP identity + schema revalidation
       ↓
 MCP call only when allowed
       ↓
@@ -84,7 +98,24 @@ The current reference constraint is `mcp>=2.2,<3`.
 
 The SDK target is supplied by the embedding application and remains outside Manager's canonical contracts. This keeps URLs, process commands, credentials, OAuth configuration, and other environment-specific connection material out of the public architecture boundary.
 
-The bridge performs discovery before execution. It supports the target forms accepted by the installed official SDK, including its current Streamable HTTP and stdio client paths.
+The bridge performs discovery before execution and accepts an optional positive `operation_timeout_seconds`. SDK transport errors, nested task-group failures, MCP error results, and configured operation timeouts are normalized into Manager's `MCPBoundaryError` boundary.
+
+Each reference operation owns a fresh SDK client context. This favors fail-closed cleanup and reconnectability over connection pooling.
+
+## Stage 11 transport evidence
+
+CI now installs the optional MCP dependency and launches a synthetic MCP server as a real stdio subprocess. The transport-conformance suite proves:
+
+- official SDK discovery over stdio;
+- structured result normalization;
+- governed execution through `ToolRegistry`;
+- schema drift blocking after registration and before remote execution;
+- disappearance and later reconnect behavior;
+- MCP error-result normalization;
+- slow-call timeout/cancellation and subprocess cleanup;
+- successful reconnection after a timed-out call.
+
+No external MCP service, production credential, or real side effect is used. See [`mcp-transport-conformance.md`](mcp-transport-conformance.md).
 
 ## Security boundary
 
@@ -100,7 +131,7 @@ In particular:
 
 ## Non-goals
 
-Stage 10 does not establish:
+The current MCP path does not establish:
 
 - automatic trust of arbitrary MCP servers;
 - automatic registration of every discovered tool;
@@ -108,6 +139,7 @@ Stage 10 does not establish:
 - remote verification of consequential effects by default;
 - production credential handling;
 - OAuth policy or secret storage;
+- Streamable HTTP conformance;
 - long-lived connection pooling;
 - distributed MCP session coordination;
 - provider-managed MCP execution;

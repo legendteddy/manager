@@ -44,3 +44,11 @@ jobs:
       - name: Validate contracts and emitted runtime artifacts
         shell: bash
         run: PYTHONPATH=runtime/python python3 scripts/schema_conformance.py
+
+      - name: Install optional MCP transport dependency
+        shell: bash
+        run: python3 -m pip install --disable-pip-version-check --quiet -e 'runtime/python[mcp]'
+
+      - name: Run MCP stdio transport conformance
+        shell: bash
+        run: PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_transport_conformance.py' -v

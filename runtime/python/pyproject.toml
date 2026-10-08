@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "manager-reference-runtime"
-version = "0.8.0"
-description = "Python reference control-plane, governed tool, durable approval, resumable bounded agent-loop, conformance, and MCP adapter runtime for Manager"
+version = "0.9.0"
+description = "Python reference control-plane, governed tool, durable approval, resumable bounded agent-loop, conformance, and governed MCP runtime for Manager"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 from .base import MCPBoundaryError, normalize_mcp_tool
+
+T = TypeVar("T")
 
 
 class OfficialMCPClient:
@@ -14,11 +17,20 @@ class OfficialMCPClient:
     implementation without changing Manager's policy boundary.
     """
 
-    def __init__(self, server_id: str, target: Any) -> None:
+    def __init__(
+        self,
+        server_id: str,
+        target: Any,
+        *,
+        operation_timeout_seconds: float | None = None,
+    ) -> None:
         if not isinstance(server_id, str) or not server_id:
             raise ValueError("server_id must be non-empty text")
+        if operation_timeout_seconds is not None and operation_timeout_seconds <= 0:
+            raise ValueError("operation_timeout_seconds must be positive when provided")
         self.server_id = server_id
         self.target = target
+        self.operation_timeout_seconds = operation_timeout_seconds
 
     @staticmethod
     def _imports():
@@ -37,8 +49,47 @@ class OfficialMCPClient:
             return value.model_dump(by_alias=True, exclude_none=True)
         return value
 
+    @staticmethod
+    def _find_nested_exception(
+        error: BaseException, expected: type[BaseException]
+    ) -> BaseException | None:
+        if isinstance(error, expected):
+            return error
+        if isinstance(error, BaseExceptionGroup):
+            for nested in error.exceptions:
+                match = OfficialMCPClient._find_nested_exception(nested, expected)
+                if match is not None:
+                    return match
+        return None
+
+    def _run_operation(
+        self, operation: str, function: Callable[[], Awaitable[T]]
+    ) -> T:
+        anyio, _ = self._imports()
+
+        async def guarded() -> T:
+            if self.operation_timeout_seconds is None:
+                return await function()
+            with anyio.fail_after(self.operation_timeout_seconds):
+                return await function()
+
+        try:
+            return anyio.run(guarded)
+        except Exception as exc:
+            timeout = self._find_nested_exception(exc, TimeoutError)
+            if timeout is not None:
+                raise MCPBoundaryError(f"MCP {operation} timed out") from timeout
+
+            boundary = self._find_nested_exception(exc, MCPBoundaryError)
+            if boundary is not None:
+                raise MCPBoundaryError(str(boundary)) from boundary
+
+            raise MCPBoundaryError(
+                f"MCP {operation} failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
     def list_tools(self) -> list[dict[str, Any]]:
-        anyio, Client = self._imports()
+        _, Client = self._imports()
         target = self.target
 
         async def collect() -> list[dict[str, Any]]:
@@ -54,17 +105,17 @@ class OfficialMCPClient:
                     if cursor is None:
                         return collected
 
-        return anyio.run(collect)
+        return self._run_operation("tool discovery", collect)
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        anyio, Client = self._imports()
+        _, Client = self._imports()
         target = self.target
 
         async def invoke() -> Any:
             async with Client(target) as client:
-                # List the selected tool first. The current SDK uses discovery
-                # state for schema-aware calls, including newer HTTP parameter
-                # header behavior, so execution never skips discovery.
+                # Discover immediately before execution. Manager-owned MCP tool
+                # adapters perform the authoritative schema fingerprint check;
+                # this bridge also refuses a tool that disappeared entirely.
                 cursor: str | None = None
                 found = False
                 while True:
@@ -93,4 +144,4 @@ class OfficialMCPClient:
                     return payload["structured_content"]
                 return payload.get("content", payload)
 
-        return anyio.run(invoke)
+        return self._run_operation(f"tool call {name!r}", invoke)

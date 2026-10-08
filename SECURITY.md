@@ -71,19 +71,27 @@ Provider-executed built-in tools or provider-managed MCP tools are not enabled i
 
 MCP is treated as an external capability protocol, not a trusted authority source.
 
-The Stage 10 reference path uses explicit local bindings. An MCP server may advertise a tool name, description, annotations, input schema, and other metadata, but Manager accepts the tool only when an application-owned binding already specifies the exact remote tool identity and trusted local definition.
+The reference path uses explicit local bindings. An MCP server may advertise a tool name, description, annotations, input schema, and other metadata, but Manager accepts the tool only when an application-owned binding already specifies the exact remote tool identity and trusted local definition.
 
 Remote descriptions, titles, annotations, read-only/destructive hints, and other server metadata must not determine Manager's side-effect class, authorization, approval policy, verifier, sensitive-output policy, or model-facing description.
 
 The discovered input schema must exactly match the reviewed local schema. Schema drift, duplicate discovery names, missing tools, or a changed configured server identity fail closed.
 
+Registration-time validation is not treated as permanent trust. Immediately before execution, the MCP adapter re-discovers the selected tool and revalidates server identity, exact tool presence, and the reviewed schema fingerprint. Drift stops before the remote tool call.
+
 MCP provenance is included in the effective registered tool version. Durable checkpoints therefore reject a resumed consequential action if its configured server, remote tool identity, or discovered input schema has changed since review.
 
 Consequential MCP tools require an application-owned verifier before registration. A successful MCP response is not, by itself, independent verification that the intended external effect occurred.
 
+The optional official SDK bridge may be configured with a positive operation timeout. Timeouts, nested SDK task-group failures, transport failures, and MCP error results are normalized at Manager's adapter boundary. Each reference operation owns a fresh SDK client context so a later operation reconnects rather than reusing an uncertain cancelled session.
+
+CI exercises this behavior against a synthetic local stdio MCP subprocess. The suite verifies discovery, governed execution, result normalization, execution-time schema drift blocking, disappearance/reconnect behavior, error-result normalization, slow-call cancellation, subprocess cleanup, and post-timeout reconnection. It uses no external MCP service, credential, or real side effect.
+
+This evidence does **not** establish Streamable HTTP conformance, production OAuth or credential handling, connection pooling safety, arbitrary-server trustworthiness, hostile-wire robustness, process sandboxing, or production readiness.
+
 Connection targets, process commands, URLs, credentials, OAuth configuration, and other environment-specific MCP settings remain outside canonical public contracts. Tool output returned by MCP is untrusted data and follows the same redaction, continuation, and trace-minimization rules as native tool output.
 
-See [`docs/mcp-adapters.md`](docs/mcp-adapters.md).
+See [`docs/mcp-adapters.md`](docs/mcp-adapters.md) and [`docs/mcp-transport-conformance.md`](docs/mcp-transport-conformance.md).
 
 ## Bounded agent loops
 
@@ -172,4 +180,4 @@ A dedicated private vulnerability-reporting channel has not yet been established
 
 ## Security maturity
 
-Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, Manager-owned MCP tool binding, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, legal state-transition validation, corrupted-state fail-closed handling, recovery-required resolution from explicit evidence, checkpoint-version rejection/migration boundaries, finite multi-step budgets, repeated-action loop detection, sensitive-result withholding, durable bounded-loop resumption across approval interruption, and full contract conformance testing in CI. These controls have not been independently security-audited and do not establish production readiness, automatic trust of MCP servers, production sandboxing, credential safety, encrypted state handling, distributed coordination, exactly-once side effects, or safe autonomous production side effects.
+Manager now has executable reference controls for model gating, governed synthetic custom-tool execution, Manager-owned MCP tool binding, execution-time MCP schema/identity revalidation, synthetic stdio MCP transport conformance, bounded MCP operation timeouts and cancellation cleanup, approval fingerprinting, durable approval checkpoints, stale-state rejection, optimistic state revisions, legal state-transition validation, corrupted-state fail-closed handling, recovery-required resolution from explicit evidence, checkpoint-version rejection/migration boundaries, finite multi-step budgets, repeated-action loop detection, sensitive-result withholding, durable bounded-loop resumption across approval interruption, and full contract conformance testing in CI. These controls have not been independently security-audited and do not establish production readiness, automatic trust of MCP servers, Streamable HTTP safety, production OAuth/credential safety, production sandboxing, encrypted state handling, distributed coordination, exactly-once side effects, or safe autonomous production side effects.
