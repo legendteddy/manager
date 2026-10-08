@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Protocol, runtime_checkable
 
 ModelPayload = dict[str, Any]
 
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
+_MODEL_REQUEST_KEYS = {
+    "request_id",
+    "model",
+    "instructions",
+    "input",
+    "max_output_tokens",
+    "tools",
+    "continuation",
+    "metadata",
+    "extensions",
+}
+_MODEL_REQUEST_TOOL_KEYS = {"name", "description", "input_schema"}
+_CONTINUATION_KEYS = {"prior_response_ref", "tool_results"}
+_CONTINUATION_RESULT_KEYS = {"proposal_id", "status", "output", "redacted"}
 _MODEL_RESPONSE_KEYS = {
     "response_id",
     "provider",
@@ -43,19 +58,56 @@ class ModelAdapter(Protocol):
 def _validate_tool_definitions(tools: Any) -> None:
     if not isinstance(tools, list):
         raise TypeError("model request tools must be a list")
+    seen_payloads: set[str] = set()
+    seen_names: set[str] = set()
     for tool in tools:
         if not isinstance(tool, dict):
             raise TypeError("model request tool definitions must be objects")
+        unknown = sorted(set(tool) - _MODEL_REQUEST_TOOL_KEYS)
+        if unknown:
+            raise ValueError(
+                f"model request tool definition has unknown fields: {', '.join(unknown)}"
+            )
         for key in ("name", "description", "input_schema"):
             if key not in tool:
                 raise ValueError(f"model request tool definition missing {key}")
+
+        name = tool["name"]
+        if not isinstance(name, str) or not _TOOL_NAME.fullmatch(name):
+            raise ValueError("model request tool name is invalid")
+        if name in seen_names:
+            raise ValueError("model request tool names must be unique")
+        seen_names.add(name)
+
+        description = tool["description"]
+        if not isinstance(description, str) or not description:
+            raise ValueError("model request tool description must be non-empty text")
         if not isinstance(tool["input_schema"], dict):
             raise TypeError("model request tool input_schema must be an object")
+
+        try:
+            encoded = json.dumps(
+                tool,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise TypeError("model request tool definitions must be JSON-compatible") from exc
+        if encoded in seen_payloads:
+            raise ValueError("model request tool definitions must be unique")
+        seen_payloads.add(encoded)
 
 
 def _validate_continuation(continuation: Any) -> None:
     if not isinstance(continuation, dict):
         raise TypeError("model request continuation must be an object")
+    unknown = sorted(set(continuation) - _CONTINUATION_KEYS)
+    if unknown:
+        raise ValueError(
+            f"model request continuation has unknown fields: {', '.join(unknown)}"
+        )
     prior = continuation.get("prior_response_ref")
     if not isinstance(prior, str) or not prior:
         raise ValueError("model request continuation requires prior_response_ref")
@@ -66,6 +118,11 @@ def _validate_continuation(continuation: Any) -> None:
     for result in results:
         if not isinstance(result, dict):
             raise TypeError("continuation tool results must be objects")
+        unknown_result = sorted(set(result) - _CONTINUATION_RESULT_KEYS)
+        if unknown_result:
+            raise ValueError(
+                f"continuation tool result has unknown fields: {', '.join(unknown_result)}"
+            )
         proposal_id = result.get("proposal_id")
         if not isinstance(proposal_id, str) or not proposal_id:
             raise ValueError("continuation tool result requires proposal_id")
@@ -81,12 +138,20 @@ def _validate_continuation(continuation: Any) -> None:
 
 
 def validate_model_request(request: ModelPayload) -> None:
+    if not isinstance(request, dict):
+        raise TypeError("model request must be an object")
     required = ("request_id", "model", "input")
-    missing = [key for key in required if not request.get(key)]
+    missing = [key for key in required if key not in request]
     if missing:
         raise ValueError(f"model request missing required fields: {', '.join(missing)}")
-    if not isinstance(request["input"], str):
-        raise TypeError("model request input must be text in the reference adapter")
+    unknown = sorted(set(request) - _MODEL_REQUEST_KEYS)
+    if unknown:
+        raise ValueError(f"model request has unknown fields: {', '.join(unknown)}")
+
+    for key in ("request_id", "model", "input"):
+        value = request[key]
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"model request {key} must be non-empty text")
     if "instructions" in request and not isinstance(request["instructions"], str):
         raise TypeError("model request instructions must be text")
     if "max_output_tokens" in request:
@@ -97,6 +162,9 @@ def validate_model_request(request: ModelPayload) -> None:
         _validate_tool_definitions(request["tools"])
     if "continuation" in request:
         _validate_continuation(request["continuation"])
+    for key in ("metadata", "extensions"):
+        if key in request and not isinstance(request[key], dict):
+            raise TypeError(f"model request {key} must be an object")
 
 
 def _validate_usage(value: Any) -> None:
