@@ -273,7 +273,7 @@ class MCPStreamableHTTPConformanceTests(unittest.TestCase):
 
         self.assertEqual("failed", result["status"])
         self.assertEqual("tool_execution_failed", result["decision_reason"])
-        self.assertIn("schema changed", result["error"])
+        self.assertEqual("MCPBoundaryError", result["error"])
         self.assertEqual([], self.read_log())
 
     def test_server_restart_recovers_without_reregistering_binding(self) -> None:
