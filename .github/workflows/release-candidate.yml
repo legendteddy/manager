@@ -1,0 +1,57 @@
+name: Build release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-release-candidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out selected revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+
+      - name: Set up release Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install known-good direct baseline
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check --quiet --upgrade \
+            'pip==26.2.1' \
+            'setuptools==84.0.0' \
+            'packaging==26.3' \
+            'build==1.6.1' \
+            'jsonschema==4.26.0' \
+            'openai==3.26.0' \
+            'mcp==2.3.0'
+
+      - name: Build release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/build_release_candidate.py --output release-candidate
+          python -m pip install --disable-pip-version-check --no-deps --target /tmp/manager-rc-install release-candidate/artifacts/*.whl
+          PYTHONPATH=/tmp/manager-rc-install python - <<'PY'
+          import manager_runtime
+          assert manager_runtime.__all__
+          PY
+
+      - name: Upload release candidate bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: manager-release-candidate-${{ github.sha }}
+          path: release-candidate/
+          if-no-files-found: error
+          retention-days: 7
