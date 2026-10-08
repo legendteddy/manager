@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/tool-result.schema.json",
+  "title": "Manager Tool Result",
+  "type": "object",
+  "required": ["request_id", "tool_name", "status", "side_effect_class", "verification"],
+  "properties": {
+    "request_id": {"type": "string", "minLength": 1},
+    "tool_name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "status": {"enum": ["executed", "blocked", "approval_required", "failed"]},
+    "side_effect_class": {
+      "enum": ["analysis", "read", "reversible_write", "external_commitment", "sensitive_destructive"]
+    },
+    "decision_reason": {"type": "string"},
+    "output": {},
+    "approval_ref": {"type": ["string", "null"]},
+    "approval": {"type": ["object", "null"], "additionalProperties": true},
+    "error": {"type": ["string", "null"]},
+    "redacted": {"type": "boolean", "default": false},
+    "verification": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["pass", "fail", "not_required", "unverified"]},
+        "details": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}

@@ -14,6 +14,20 @@
       "description": "Text input for the v1 provider-neutral reference contract."
     },
     "max_output_tokens": {"type": "integer", "minimum": 1},
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "input_schema"],
+        "properties": {
+          "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+          "description": {"type": "string", "minLength": 1},
+          "input_schema": {"type": "object", "additionalProperties": true}
+        },
+        "additionalProperties": false
+      },
+      "uniqueItems": true
+    },
     "metadata": {"type": "object", "additionalProperties": true},
     "extensions": {"type": "object", "additionalProperties": true}
   },

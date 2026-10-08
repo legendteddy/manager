@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/tool-definition.schema.json",
+  "title": "Manager Tool Definition",
+  "type": "object",
+  "required": ["name", "description", "side_effect_class", "input_schema", "requires_verification"],
+  "properties": {
+    "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+    "description": {"type": "string", "minLength": 1},
+    "side_effect_class": {
+      "enum": ["analysis", "read", "reversible_write", "external_commitment", "sensitive_destructive"]
+    },
+    "input_schema": {"type": "object", "additionalProperties": true},
+    "requires_verification": {"type": "boolean"},
+    "sensitive_output": {"type": "boolean", "default": false},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
