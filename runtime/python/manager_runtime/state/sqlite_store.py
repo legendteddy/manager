@@ -9,9 +9,35 @@ from .sqlite_store_v2 import SQLiteRunStore as _SQLiteRunStoreV2
 SQLITE_STATE_SCHEMA_VERSION = 3
 _SQLITE_RUNTIME_PROTOCOL_FUNCTION = "manager_runtime_schema_version"
 _SQLITE_RUNTIME_GUARD_TRIGGERS = {
-    "manager_runs_runtime_guard_insert",
-    "manager_runs_runtime_guard_update",
-    "manager_runs_runtime_guard_delete",
+    "manager_runs_runtime_guard_insert": "INSERT",
+    "manager_runs_runtime_guard_update": "UPDATE",
+    "manager_runs_runtime_guard_delete": "DELETE",
+}
+_REQUIRED_COLUMNS = {
+    "manager_runs": {"run_id", "revision", "state_json"},
+    "manager_state_meta": {"key", "value"},
+    "manager_run_leases": {
+        "run_id",
+        "owner_id",
+        "fencing_token",
+        "expires_at_epoch",
+    },
+    "manager_operations": {
+        "operation_id",
+        "run_id",
+        "request_fingerprint",
+        "fencing_token",
+        "status",
+        "result_json",
+        "created_at_epoch",
+        "updated_at_epoch",
+    },
+}
+_REQUIRED_PRIMARY_KEYS = {
+    "manager_runs": {"run_id"},
+    "manager_state_meta": {"key"},
+    "manager_run_leases": {"run_id"},
+    "manager_operations": {"operation_id"},
 }
 
 
@@ -84,8 +110,7 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
     @staticmethod
     def _create_runtime_guard_triggers(connection: sqlite3.Connection) -> None:
         message = "Manager runtime is too old for this coordinated SQLite schema"
-        for operation in ("INSERT", "UPDATE", "DELETE"):
-            name = f"manager_runs_runtime_guard_{operation.lower()}"
+        for name, operation in _SQLITE_RUNTIME_GUARD_TRIGGERS.items():
             connection.execute(
                 f"""
                 CREATE TRIGGER IF NOT EXISTS {name}
@@ -121,6 +146,44 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
         return version
 
     @staticmethod
+    def _validate_table_shape(
+        connection: sqlite3.Connection, table: str
+    ) -> None:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        columns = {row["name"] for row in rows}
+        missing = sorted(_REQUIRED_COLUMNS[table] - columns)
+        if missing:
+            raise RunStateError(
+                f"SQLite state table {table} is missing required columns: "
+                + ", ".join(missing)
+            )
+        primary_key = {row["name"] for row in rows if int(row["pk"]) > 0}
+        if primary_key != _REQUIRED_PRIMARY_KEYS[table]:
+            raise RunStateError(
+                f"SQLite state table {table} has an unexpected primary key"
+            )
+
+    @staticmethod
+    def _validate_run_foreign_key(
+        connection: sqlite3.Connection, table: str
+    ) -> None:
+        rows = connection.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+        found = False
+        for row in rows:
+            if (
+                row["table"] == "manager_runs"
+                and row["from"] == "run_id"
+                and row["to"] == "run_id"
+                and str(row["on_delete"]).upper() == "CASCADE"
+            ):
+                found = True
+                break
+        if not found:
+            raise RunStateError(
+                f"SQLite state table {table} is missing its run foreign key"
+            )
+
+    @staticmethod
     def _validate_v3_schema(connection: sqlite3.Connection) -> None:
         tables = {
             row["name"]
@@ -128,30 +191,35 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-        required_tables = {
-            "manager_runs",
-            "manager_state_meta",
-            "manager_run_leases",
-            "manager_operations",
-        }
-        missing_tables = sorted(required_tables - tables)
+        missing_tables = sorted(set(_REQUIRED_COLUMNS) - tables)
         if missing_tables:
             raise RunStateError(
                 "SQLite state schema is incomplete: " + ", ".join(missing_tables)
             )
+        for table in sorted(_REQUIRED_COLUMNS):
+            SQLiteRunStore._validate_table_shape(connection, table)
+        for table in ("manager_run_leases", "manager_operations"):
+            SQLiteRunStore._validate_run_foreign_key(connection, table)
 
-        triggers = {
-            row["name"]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'trigger'"
-            ).fetchall()
-        }
-        missing_triggers = sorted(_SQLITE_RUNTIME_GUARD_TRIGGERS - triggers)
-        if missing_triggers:
-            raise RunStateError(
-                "SQLite coordinated runtime guard is incomplete: "
-                + ", ".join(missing_triggers)
-            )
+        trigger_rows = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+        triggers = {row["name"]: row["sql"] for row in trigger_rows}
+        for name, operation in _SQLITE_RUNTIME_GUARD_TRIGGERS.items():
+            sql = triggers.get(name)
+            if not isinstance(sql, str):
+                raise RunStateError(
+                    f"SQLite coordinated runtime guard is incomplete: {name}"
+                )
+            normalized = " ".join(sql.upper().split())
+            if (
+                f"BEFORE {operation} ON MANAGER_RUNS" not in normalized
+                or f"{_SQLITE_RUNTIME_PROTOCOL_FUNCTION.upper()}()" not in normalized
+                or "RAISE(ABORT" not in normalized
+            ):
+                raise RunStateError(
+                    f"SQLite coordinated runtime guard is malformed: {name}"
+                )
 
     def _upgrade_v2_to_v3(self) -> None:
         connection = self._connect()
