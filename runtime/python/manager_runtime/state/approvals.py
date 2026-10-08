@@ -69,9 +69,7 @@ def checkpoint_pending_tool_approval(
     return store.create(state)
 
 
-def _mark_stale(
-    store: RunStore, state: RunState, reason: str
-) -> RunState:
+def _mark_stale(store: RunStore, state: RunState, reason: str) -> RunState:
     replacement = deepcopy(state)
     pending = replacement["pending_action"]
     approval = pending["approval"]
@@ -126,6 +124,10 @@ def resume_tool_approval(
     request = deepcopy(current_request or stored_request)
     approval = pending["approval"]
 
+    if approval.get("status") != "pending":
+        raise RunStateError(
+            "pending approval packet is no longer fresh; create a new approval checkpoint"
+        )
     if decision.get("approval_id") != approval.get("approval_id"):
         raise RunStateError("approval decision does not match the pending approval")
     if decision.get("decision") not in {"approved", "rejected"}:
@@ -190,9 +192,7 @@ def resume_tool_approval(
 
     authorization = _safe_authorization_context(current_authorization)
     authorization["approval"] = resolved
-    result = execute_tool_request(
-        executing["task"], request, registry, authorization
-    )
+    result = execute_tool_request(executing["task"], request, registry, authorization)
 
     final_state = deepcopy(executing)
     final_state["last_tool_result"] = result
@@ -207,6 +207,4 @@ def resume_tool_approval(
     else:
         final_state["status"] = "failed"
         final_state["pending_action"] = None
-    return store.compare_and_swap(
-        run_id, executing["revision"], final_state
-    )
+    return store.compare_and_swap(run_id, executing["revision"], final_state)
