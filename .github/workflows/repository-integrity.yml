@@ -103,11 +103,15 @@ jobs:
           python3 -m pip download --disable-pip-version-check --only-binary=:all: --dest /tmp/manager-deps-a -r runtime/python/constraints/known-good.txt
           python3 -m pip download --disable-pip-version-check --only-binary=:all: --dest /tmp/manager-deps-b -r runtime/python/constraints/known-good.txt
 
-      - name: Build reproducible release candidate twice
+      - name: Build reproducible release candidate twice from clean source
         shell: bash
         run: |
           set -euo pipefail
+          git clean -fdx
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
           python3 scripts/build_release_candidate.py --dependency-dir /tmp/manager-deps-a --output /tmp/manager-rc-a
+          git clean -fdx
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
           python3 scripts/build_release_candidate.py --dependency-dir /tmp/manager-deps-b --output /tmp/manager-rc-b --compare-to /tmp/manager-rc-a
           python3 scripts/verify_release_candidate.py /tmp/manager-rc-a \
             --expected-commit "${GITHUB_SHA}" \
@@ -124,8 +128,7 @@ jobs:
             --require-hashes \
             --target /tmp/manager-offline-install \
             -r /tmp/manager-rc-a/requirements.lock
-          python3 -m pip install --disable-pip-version-check --no-deps \
-            --target /tmp/manager-rc-install /tmp/manager-rc-a/artifacts/*.whl
+          python3 -m pip install --disable-pip-version-check --no-deps --target /tmp/manager-rc-install /tmp/manager-rc-a/artifacts/*.whl
           PYTHONPATH=/tmp/manager-rc-install python3 - <<'PY'
           import manager_runtime
           assert manager_runtime.__all__

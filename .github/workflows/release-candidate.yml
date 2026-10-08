@@ -39,10 +39,12 @@ jobs:
             --dest /tmp/manager-release-dependencies \
             -r runtime/python/constraints/known-good.txt
 
-      - name: Build and verify release candidate
+      - name: Build and verify release candidate from clean source
         shell: bash
         run: |
           set -euo pipefail
+          git clean -fdx
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
           python scripts/build_release_candidate.py \
             --dependency-dir /tmp/manager-release-dependencies \
             --output release-candidate
