@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
+from ..security import NetworkSecurityPolicy, SecurityBoundaryError
 from .base import MCPBoundaryError, normalize_mcp_tool
 
 T = TypeVar("T")
@@ -15,6 +16,11 @@ class OfficialMCPClient:
     Manager's canonical contracts. Each operation owns its SDK client context;
     applications needing long-lived pooling may provide another MCPClient
     implementation without changing Manager's policy boundary.
+
+    URL targets may be paired with `NetworkSecurityPolicy` so production
+    embeddings can reject cleartext/downgrade-prone targets before the SDK opens
+    a connection. CA, mTLS, OAuth, and custom transport configuration still
+    belong to the concrete SDK target/client supplied by the application.
     """
 
     def __init__(
@@ -23,14 +29,32 @@ class OfficialMCPClient:
         target: Any,
         *,
         operation_timeout_seconds: float | None = None,
+        network_policy: NetworkSecurityPolicy | None = None,
     ) -> None:
         if not isinstance(server_id, str) or not server_id:
             raise ValueError("server_id must be non-empty text")
         if operation_timeout_seconds is not None and operation_timeout_seconds <= 0:
             raise ValueError("operation_timeout_seconds must be positive when provided")
+        if network_policy is not None and not isinstance(
+            network_policy, NetworkSecurityPolicy
+        ):
+            raise TypeError("network_policy must be NetworkSecurityPolicy when provided")
         self.server_id = server_id
         self.target = target
         self.operation_timeout_seconds = operation_timeout_seconds
+        self.network_policy = network_policy
+        self._validate_network_target()
+
+    def _validate_network_target(self) -> None:
+        """Validate URL targets without pretending to inspect custom transports."""
+        if self.network_policy is None or not isinstance(self.target, str):
+            return
+        try:
+            self.network_policy.validate_url(self.target)
+        except SecurityBoundaryError as exc:
+            raise MCPBoundaryError(
+                f"MCP network policy rejected target ({exc.code})"
+            ) from exc
 
     @staticmethod
     def _imports():
@@ -139,6 +163,7 @@ class OfficialMCPClient:
         return matches[0]
 
     def list_tools(self) -> list[dict[str, Any]]:
+        self._validate_network_target()
         _, Client = self._imports()
         target = self.target
 
@@ -158,6 +183,7 @@ class OfficialMCPClient:
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
         """Invoke a tool after same-session existence discovery."""
+        self._validate_network_target()
         _, Client = self._imports()
         target = self.target
 
@@ -186,6 +212,7 @@ class OfficialMCPClient:
         if not isinstance(expected_schema_fingerprint, str) or not expected_schema_fingerprint:
             raise MCPBoundaryError("expected MCP schema fingerprint must be non-empty text")
 
+        self._validate_network_target()
         _, Client = self._imports()
         target = self.target
 
