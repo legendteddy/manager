@@ -27,13 +27,40 @@ class MCPToolAdapter:
         client: MCPClient,
         remote_tool_name: str,
         *,
+        expected_server_id: str,
+        expected_schema_fingerprint: str,
         verifier: Verifier | None = None,
     ) -> None:
         self.client = client
         self.remote_tool_name = remote_tool_name
+        self.expected_server_id = expected_server_id
+        self.expected_schema_fingerprint = expected_schema_fingerprint
         self._verifier = verifier
 
+    def _revalidate_remote_tool(self) -> None:
+        if self.client.server_id != self.expected_server_id:
+            raise MCPBoundaryError("MCP server identity changed before execution")
+
+        matches = [
+            normalize_mcp_tool(item)
+            for item in self.client.list_tools()
+            if normalize_mcp_tool(item)["name"] == self.remote_tool_name
+        ]
+        if not matches:
+            raise MCPBoundaryError(
+                f"MCP tool disappeared before execution: {self.remote_tool_name}"
+            )
+        if len(matches) != 1:
+            raise MCPBoundaryError(
+                f"MCP discovery returned duplicate tool name: {self.remote_tool_name}"
+            )
+        if matches[0]["schema_fingerprint"] != self.expected_schema_fingerprint:
+            raise MCPBoundaryError(
+                f"MCP input schema changed before execution for {self.remote_tool_name!r}; local review is required"
+            )
+
     def execute(self, arguments: dict[str, Any]) -> Any:
+        self._revalidate_remote_tool()
         return self.client.call_tool(self.remote_tool_name, dict(arguments))
 
     def verify(self, arguments: dict[str, Any], output: Any) -> bool:
@@ -151,7 +178,13 @@ def register_mcp_bindings(
         try:
             registry.register(
                 definition,
-                MCPToolAdapter(client, remote_name, verifier=verifier),
+                MCPToolAdapter(
+                    client,
+                    remote_name,
+                    expected_server_id=binding["server_id"],
+                    expected_schema_fingerprint=remote["schema_fingerprint"],
+                    verifier=verifier,
+                ),
             )
         except (ToolRuntimeError, TypeError, ValueError) as exc:
             raise MCPBoundaryError(str(exc)) from exc
