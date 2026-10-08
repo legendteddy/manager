@@ -6,6 +6,14 @@ The format is intentionally simple while the project remains pre-stable. Release
 
 ## Unreleased
 
+### Deployment reference
+
+- add strict profile-aware deployment configuration with fail-fast unknown-setting validation and explicit production requirements;
+- add reusable liveness/readiness and graceful-shutdown primitives for the network service boundary;
+- add verified SQLite online backup, corruption detection, restore validation, and explicit replacement safeguards;
+- add a non-root, read-only-root-compatible multi-stage container path plus generic production configuration and Compose examples;
+- add vendor-neutral deployment guidance and an operator runbook covering startup, shutdown, diagnostics, backup/restore, upgrades, rollback limits, resource ceilings, and disaster scenarios.
+
 ### First-release engineering
 
 - add required Python 3.11, 3.12, 3.13, and 3.14 compatibility coverage, including wheel build/install/import on every advertised line;
