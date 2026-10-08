@@ -6,6 +6,14 @@ The format is intentionally simple while the project remains pre-stable. Release
 
 ## Unreleased
 
+### Provider resilience and neutrality
+
+- add explicit provider capability declarations and sanitized normalized provider failure categories;
+- add a deterministic synthetic model provider that fully exercises the provider-neutral request/response and continuation boundary without credentials;
+- add finite model-call retry policy, explicit request timeouts, and safe initial-turn provider failover that pins the selected route before continuation;
+- fail closed on missing response/tool-call identity, malformed arguments, unsupported provider status/reasons, and unexpected response types;
+- document durable-provider compatibility rules, unsupported cross-provider continuation, provider failure tests, and residual risks.
+
 ### First-release engineering
 
 - add required Python 3.11, 3.12, 3.13, and 3.14 compatibility coverage, including wheel build/install/import on every advertised line;
