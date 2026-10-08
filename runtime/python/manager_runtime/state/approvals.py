@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
@@ -35,6 +36,116 @@ def _safe_authorization_context(value: dict[str, Any] | None) -> dict[str, Any]:
             raise RunStateError(f"authorization field {key!r} must be boolean")
         result[key] = raw
     return result
+
+
+def _serialize_recorded_tool_output(result: dict[str, Any], max_chars: int) -> tuple[str, bool]:
+    if result.get("redacted"):
+        return "Tool executed successfully; output withheld from the model by Manager policy.", True
+    try:
+        text = json.dumps(
+            result.get("output"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+    except (TypeError, ValueError):
+        text = str(result.get("output"))
+    marker = "...[truncated by Manager]"
+    if len(text) > max_chars:
+        if max_chars <= len(marker):
+            text = marker[:max_chars]
+        else:
+            text = text[: max_chars - len(marker)] + marker
+    return text, False
+
+
+def _recover_recorded_loop_execution(
+    store: RunStore,
+    state: RunState,
+    registry: ToolRegistry,
+) -> RunState | None:
+    """Promote a durably recorded verified effect to continuation-ready.
+
+    This path is used only when the tool result itself was persisted as executed
+    but the process disappeared before the outer agent loop could checkpoint its
+    continuation. No tool is re-executed here.
+    """
+    result = state.get("last_tool_result")
+    extensions = state.get("extensions")
+    if not isinstance(result, dict) or result.get("status") != "executed":
+        return None
+    if not isinstance(extensions, dict):
+        return None
+    checkpoint = extensions.get("agent_loop")
+    if not isinstance(checkpoint, dict) or checkpoint.get("phase") != "waiting_approval":
+        return None
+
+    pending = state.get("pending_action")
+    if not isinstance(pending, dict):
+        raise RunStateError("recorded loop execution is missing pending_action")
+    request = pending.get("tool_request")
+    if not isinstance(request, dict):
+        raise RunStateError("recorded loop execution is missing its tool request")
+    expected_request = checkpoint.get("pending_request_fingerprint")
+    if expected_request != tool_request_fingerprint(request):
+        raise RunStateError("recorded loop execution request identity no longer matches checkpoint")
+
+    registered = registry.get(request.get("tool_name"))
+    if registered is None:
+        raise RunStateError("recorded loop execution tool is no longer registered")
+    if pending.get("tool_definition_fingerprint") != tool_definition_fingerprint(
+        registered.definition
+    ):
+        raise RunStateError("recorded loop execution tool definition changed before continuation")
+
+    proposal_id = checkpoint.get("pending_proposal_id")
+    if not isinstance(proposal_id, str) or not proposal_id:
+        raise RunStateError("recorded loop execution is missing pending proposal identity")
+    max_chars = checkpoint.get("max_tool_result_chars")
+    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars < 1:
+        raise RunStateError("recorded loop execution has invalid result-size budget")
+
+    serialized, redacted = _serialize_recorded_tool_output(result, max_chars)
+    replacement = deepcopy(state)
+    next_checkpoint = deepcopy(checkpoint)
+    next_checkpoint["phase"] = "continuation_ready"
+    next_checkpoint["continuation_tool_results"] = [
+        {
+            "proposal_id": proposal_id,
+            "status": "executed",
+            "output": serialized,
+            "redacted": redacted,
+        }
+    ]
+    next_checkpoint["current_response"] = None
+    next_checkpoint["pending_proposal_id"] = None
+    next_checkpoint["pending_request_fingerprint"] = None
+    replacement["extensions"]["agent_loop"] = next_checkpoint
+    replacement["status"] = "running"
+    replacement["pending_action"] = None
+    replacement["recovery_reason"] = None
+    replacement["revision"] = state["revision"] + 1
+    replacement["updated_at"] = _now()
+
+    trace = replacement.get("trace_snapshot")
+    if isinstance(trace, dict):
+        trace["status"] = "running"
+        trace.setdefault("events", []).append(
+            {
+                "event_type": "recovery",
+                "status": "recorded_execution_resumed",
+                "reference": result.get("request_id"),
+                "summary": "A verified tool result was already durable; Manager resumed continuation without re-executing the side effect.",
+            }
+        )
+    result_snapshot = replacement.get("result_snapshot")
+    if isinstance(result_snapshot, dict):
+        result_snapshot["status"] = "running"
+        result_snapshot["owner_decision_required"] = False
+        result_snapshot["decision_request"] = None
+
+    return store.compare_and_swap(state["run_id"], state["revision"], replacement)
 
 
 def checkpoint_pending_tool_approval(
@@ -114,13 +225,10 @@ def resume_tool_approval(
     """Resolve a persisted approval and resume exactly one tool action.
 
     The function deliberately does not auto-retry a run found in `executing`.
-    Such a state may mean the external side effect happened before the process
-    crashed, so the run is moved to `recovery_required` instead.
-
-    `success_status` defaults to `completed`. Durable multi-step workflows may
-    use `running`; in that mode an executed result remains durably `executing`
-    with its pending action until the outer loop atomically checkpoints the
-    continuation. This closes the post-effect/pre-continuation crash window.
+    An `executing` run with no durably recorded successful result moves to
+    `recovery_required`. If a verified executed result is already durable for a
+    bounded loop, Manager can instead reconstruct `continuation_ready` without
+    executing the tool again.
     """
     if success_status not in {"completed", "running"}:
         raise RunStateError("success_status must be completed or running")
@@ -132,6 +240,10 @@ def resume_tool_approval(
         raise RunStateError(f"unknown run: {run_id}")
 
     if state["status"] == "executing":
+        if success_status == "running":
+            recorded = _recover_recorded_loop_execution(store, state, registry)
+            if recorded is not None:
+                return recorded
         recovery = deepcopy(state)
         recovery["status"] = "recovery_required"
         recovery["recovery_reason"] = (
@@ -228,11 +340,14 @@ def resume_tool_approval(
     final_state["last_tool_result"] = result
     final_state["revision"] = executing["revision"] + 1
     final_state["updated_at"] = _now()
+    synthetic_running_view = False
     if result["status"] == "executed":
         if success_status == "running":
-            # Preserve the durable execution marker and pending action until the
-            # outer agent-loop checkpoint records the continuation-ready state.
+            # Keep the persisted record in `executing` until the outer loop CAS
+            # writes continuation_ready. This makes a crash in that small window
+            # distinguishable from an unknown external outcome.
             final_state["status"] = "executing"
+            synthetic_running_view = True
         else:
             final_state["status"] = "completed"
             final_state["pending_action"] = None
@@ -242,4 +357,13 @@ def resume_tool_approval(
     else:
         final_state["status"] = "failed"
         final_state["pending_action"] = None
-    return store.compare_and_swap(run_id, executing["revision"], final_state)
+    persisted = store.compare_and_swap(run_id, executing["revision"], final_state)
+
+    if synthetic_running_view:
+        # The existing outer-loop checkpoint path expects a running state. Return
+        # that transient view while leaving the durable row safely marked until
+        # its next CAS commits continuation_ready.
+        returned = deepcopy(persisted)
+        returned["status"] = "running"
+        return returned
+    return persisted
