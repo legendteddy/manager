@@ -18,7 +18,8 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
 
 
 def _normalize_status(value: Any) -> str:
-    status = str(value or "completed").lower()
+    """Normalize provider status without treating missing/unknown as success."""
+    status = str(value or "").lower()
     if status in {"completed", "complete"}:
         return "completed"
     if status in {"failed", "error"}:
@@ -128,8 +129,11 @@ class OpenAIResponsesAdapter:
         try:
             raw = self._client.responses.create(**kwargs)
         except Exception as exc:
+            # Provider exception messages can include request or transport details.
+            # Preserve the exception chain for trusted local diagnostics while the
+            # public boundary exposes only a bounded class name.
             raise ProviderAdapterError(
-                f"OpenAI Responses request failed: {type(exc).__name__}"
+                f"OpenAI Responses request failed ({type(exc).__name__})"
             ) from exc
 
         usage = _field(raw, "usage")
@@ -138,14 +142,16 @@ class OpenAIResponsesAdapter:
             "output_tokens": _field(usage, "output_tokens"),
             "total_tokens": _field(usage, "total_tokens"),
         }
+        raw_model = _field(raw, "model")
+        normalized_model = raw_model if isinstance(raw_model, str) and raw_model else request["model"]
         response: ModelPayload = {
             "response_id": _field(raw, "id"),
             "provider": self.provider,
-            "model": str(_field(raw, "model", request["model"])),
-            "status": _normalize_status(_field(raw, "status", "completed")),
+            "model": normalized_model,
+            "status": _normalize_status(_field(raw, "status")),
             "output_text": str(_field(raw, "output_text", "") or ""),
             "tool_proposals": _tool_proposals(raw),
             "usage": normalized_usage,
         }
-        validate_model_response(response)
+        validate_model_response(response, expected_provider=self.provider)
         return response
