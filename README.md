@@ -8,9 +8,9 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Governed tool-runtime stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, and a governed custom-tool execution path.
+**Durable approval-runtime stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, a governed custom-tool execution path, and a durable run-state layer for resumable approval interruptions.
 
-The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, durable approval/state storage, provider failover, transaction rollback orchestration, or general-purpose autonomous agent execution.
+The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or general-purpose autonomous agent execution.
 
 ## Core principles
 
@@ -19,6 +19,7 @@ The implemented runtime is intentionally narrow. It does not claim production re
 - **Bounded delegation.** Delegation transfers scoped work, not unlimited authority.
 - **Explicit accountability.** Every substantive decision or sub-decision has one accountable owner.
 - **Consequential approval.** Material, destructive, sensitive, or otherwise consequential actions cross a human approval gate.
+- **Resumable approval.** Approval survives interruption only as a durable, exact checkpoint that must be revalidated before execution.
 - **Authoritative reconciliation.** Update the source that owns the truth first, then propagate dependent effects and verify consistency.
 - **Evidence over ceremony.** Evals and observable outcomes matter more than agent count, role-play, or verbose traces.
 - **Provider neutrality.** Canonical contracts do not depend on one model vendor, tool protocol, state store, or product surface.
@@ -37,13 +38,15 @@ execute directly / use tools / delegate when justified
   ↓
 apply policy, approval, and evaluation gates
   ↓
+checkpoint durable state when interruption is required
+  ↓
+revalidate before resumed execution
+  ↓
 reconcile authoritative state
   ↓
 verify
   ↓
 deliver
-  ↓
-learn from evidence when durable value exists
 ```
 
 These are logical checkpoints, not mandatory agent handoffs. A simple task may collapse them into one execution.
@@ -61,6 +64,8 @@ capabilities / specialist agents / tools
       ↓
 evaluation + approval when required
       ↓
+durable run state for interrupted work
+      ↓
 execution
       ↓
 reconciliation + verification
@@ -70,7 +75,7 @@ tracing + evals
 
 Internal components use conventional technical terms such as `orchestrator`, `router`, `capability`, `specialist agent`, `policy`, `approval`, `state`, `evaluator`, `reconciliation`, `tracing`, `eval`, and `adapter`.
 
-## Provider and tool boundary
+## Provider, tool, and state boundary
 
 Manager's deterministic governance remains outside model providers and tool implementations.
 
@@ -87,12 +92,18 @@ trusted ToolRegistry + deterministic policy
       ↓
 execute / block / require approval
       ↓
-verification + ToolResult + trace
+durable approval checkpoint when needed
+      ↓
+revalidate + resume
+      ↓
+verification + ToolResult + persisted terminal state
 ```
 
 A model response supplies content or proposes a tool inside an already-bounded workflow. It cannot approve a material action, lower a tool's side-effect class, grant itself authorization, redefine state ownership, or bypass reconciliation.
 
-The first reference provider adapter targets OpenAI's Responses API. Stage 5 exposes only application-owned custom function definitions to the model; the provider adapter normalizes function calls into proposals and never executes them itself.
+The first reference provider adapter targets OpenAI's Responses API. The reference tool path exposes only application-owned custom function definitions to the model; the provider adapter normalizes function calls into proposals and never executes them itself.
+
+The first durable state adapter uses SQLite through Python's standard library. It is a reference durability layer, not an encryption boundary or a universal production datastore recommendation.
 
 ## Reference runtime
 
@@ -105,7 +116,7 @@ PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
 PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -v
 ```
 
-The deterministic eval and unit-test suite does not require provider credentials, live tools, or network access. Model-backed execution is optional and uses an explicit provider adapter.
+The deterministic eval and unit-test suite does not require provider credentials, live tools, network access, or production state stores.
 
 ## Manager, MCP, and product integrations
 
@@ -115,7 +126,7 @@ Manager is the core framework/runtime concept.
 - **MCP**: optional interoperability adapter, not Manager's identity.
 - **Product/plugin integration**: optional distribution or integration surface.
 
-Provider- or product-specific behavior belongs behind adapters rather than inside canonical contracts. Provider-managed MCP execution is not enabled in the Stage 5 reference path because tool execution must remain behind Manager's policy and approval boundary.
+Provider- or product-specific behavior belongs behind adapters rather than inside canonical contracts. Provider-managed MCP execution is not enabled in the reference path because tool execution must remain behind Manager's policy and approval boundary.
 
 ## Repository map
 
@@ -124,9 +135,10 @@ Provider- or product-specific behavior belongs behind adapters rather than insid
 - [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, and public safety
 - [`AGENTS.md`](AGENTS.md): instructions for AI systems working in this repository
 - [`contracts/`](contracts/): provider-neutral machine-readable contracts
-- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, and governed tool runtime
+- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, governed tool runtime, and durable run store
 - [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
 - [`docs/tool-runtime.md`](docs/tool-runtime.md): tool proposal, policy, approval, execution, and verification boundary
+- [`docs/run-state.md`](docs/run-state.md): durable checkpoints, resumable approvals, and recovery-required behavior
 - [`docs/handoffs.md`](docs/handoffs.md): bounded delegation contract
 - [`docs/reconciliation.md`](docs/reconciliation.md): authoritative-state reconciliation
 - [`docs/evidence.md`](docs/evidence.md): evidence and claim discipline
@@ -142,6 +154,6 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, and a governed synthetic custom-tool runtime. Current CI verifies public-repository integrity, Python compilation, unit tests, and deterministic behavioral evals without requiring provider credentials or live external side effects.
+Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, a governed synthetic custom-tool runtime, and a tested durable approval checkpoint/resume path. Current CI verifies public-repository integrity, Python compilation, unit tests, and deterministic behavioral evals without requiring provider credentials or live external side effects.
 
-Claims such as "secure", "behaviorally equivalent", "production-ready", or "safe for autonomous production side effects" require additional evidence for that exact claim.
+Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", or "safe for autonomous production side effects" require additional evidence for that exact claim.
