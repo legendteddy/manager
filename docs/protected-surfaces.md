@@ -22,8 +22,10 @@ At minimum, the following are protected:
 - reconciliation authority rules;
 - eval integrity and blocking safety expectations;
 - evolution authority and promotion limits;
+- release authority, artifact identity, and stale release-approval semantics;
+- security trust boundaries and threat-model assumptions;
 - protection-list integrity;
-- production-readiness and validation claim discipline.
+- production-readiness, reference-readiness, and validation claim discipline.
 
 ## Promotion rule
 
@@ -56,6 +58,6 @@ Examples of normally evolvable non-protected methods include:
 
 ## Integrity rule
 
-Evolution may not change a protected rule, its own promotion gate, or the eval judging it merely to obtain a PASS.
+Evolution may not change a protected rule, its own promotion gate, the threat model, release authority, or the eval judging it merely to obtain a PASS.
 
 Protected surfaces may evolve only through the normal material-change process: investigate, recommend, obtain the required human decision, mutate, reconcile, and verify.
