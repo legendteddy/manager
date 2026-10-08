@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from ..security import SecurityBoundaryError, evaluate_tool_authorization
 from .base import (
     ToolPayload,
     ToolRegistry,
@@ -36,10 +37,11 @@ def _approval_packet(
     side_effect_class: str,
     status: str = "pending",
     reason: str,
+    security_decision: ToolPayload | None = None,
 ) -> ToolPayload:
     target = request.get("target") or f"tool:{request['tool_name']}"
     risk_class = "critical" if side_effect_class == "sensitive_destructive" else "high"
-    return {
+    packet: ToolPayload = {
         "approval_id": f"approval:{request['request_id']}",
         "run_id": request["run_id"],
         "status": status,
@@ -57,6 +59,14 @@ def _approval_packet(
         "approved_by": None,
         "action_fingerprint": tool_request_fingerprint(request),
     }
+    if security_decision is not None and security_decision.get("allowed") is True:
+        packet["extensions"] = {
+            "security": {
+                "authorization_binding": security_decision["binding"],
+                "policy_revision": security_decision["policy_revision"],
+            }
+        }
+    return packet
 
 
 def _result(
@@ -99,6 +109,7 @@ def _approval_state(
     *,
     side_effect_class: str,
     reason: str,
+    security_decision: ToolPayload | None,
 ) -> tuple[bool, ToolPayload]:
     supplied = authorization.get("approval")
     expected = tool_request_fingerprint(request)
@@ -108,6 +119,7 @@ def _approval_state(
             side_effect_class=side_effect_class,
             status="pending",
             reason=reason,
+            security_decision=security_decision,
         )
 
     if supplied.get("status") != "approved":
@@ -116,6 +128,7 @@ def _approval_state(
             side_effect_class=side_effect_class,
             status="pending",
             reason=reason,
+            security_decision=security_decision,
         )
 
     if supplied.get("action_fingerprint") != expected:
@@ -124,10 +137,51 @@ def _approval_state(
             side_effect_class=side_effect_class,
             status="stale",
             reason="The approved tool action no longer matches the current target or arguments.",
+            security_decision=security_decision,
         )
         return False, stale
 
+    extensions = supplied.get("extensions")
+    security_extension = extensions.get("security") if isinstance(extensions, dict) else None
+    approved_binding = (
+        security_extension.get("authorization_binding")
+        if isinstance(security_extension, dict)
+        else None
+    )
+    current_binding = (
+        security_decision.get("binding")
+        if security_decision is not None and security_decision.get("allowed") is True
+        else None
+    )
+    if approved_binding is not None or current_binding is not None:
+        if (
+            not isinstance(approved_binding, str)
+            or not approved_binding
+            or approved_binding != current_binding
+        ):
+            stale = _approval_packet(
+                request,
+                side_effect_class=side_effect_class,
+                status="stale",
+                reason="The approved authorization identity or policy is no longer current.",
+                security_decision=security_decision,
+            )
+            return False, stale
+
     return True, supplied
+
+
+def _security_decision(
+    authorization: ToolPayload,
+    request: ToolPayload,
+    definition: ToolPayload,
+) -> ToolPayload | None:
+    decision = evaluate_tool_authorization(authorization, request, definition)
+    if decision is None:
+        return None
+    if not isinstance(decision, dict) or not isinstance(decision.get("allowed"), bool):
+        raise SecurityBoundaryError("security_decision_invalid")
+    return decision
 
 
 def execute_tool_request(
@@ -139,7 +193,9 @@ def execute_tool_request(
     """Evaluate and optionally execute one tool request.
 
     Authorization is trusted application context and must never be copied from
-    model output. The model proposal supplies only tool identity and arguments.
+    model output. If a security context/policy envelope is supplied, Manager
+    evaluates it deny-by-default and binds any approval to that exact current
+    authorization. Authentication alone never grants execution authority.
     """
     validate_tool_request(request)
     if authorization is not None and not isinstance(authorization, dict):
@@ -178,6 +234,32 @@ def execute_tool_request(
         )
 
     try:
+        security_decision = _security_decision(authorization, request, definition)
+    except SecurityBoundaryError as exc:
+        return _result(
+            request,
+            side_effect_class,
+            status="blocked",
+            reason="invalid_security_context",
+            verification_status="not_required",
+            error=exc.code,
+        )
+    if security_decision is not None:
+        if not security_decision["allowed"]:
+            return _result(
+                request,
+                side_effect_class,
+                status="blocked",
+                reason="security_authorization_denied",
+                verification_status="not_required",
+                error=str(security_decision.get("reason") or "denied"),
+            )
+        # A current Manager security decision satisfies coarse scope authorization.
+        # The legacy flag cannot bypass the stricter envelope because this branch
+        # already failed closed above when the policy denied the action.
+        authorization["scope_authorized"] = True
+
+    try:
         scope_authorized = _authorization_flag(authorization, "scope_authorized")
         human_intent_confirmed = _authorization_flag(
             authorization, "human_intent_confirmed"
@@ -212,6 +294,7 @@ def execute_tool_request(
             authorization,
             side_effect_class=side_effect_class,
             reason="Material reversible writes require exact human approval.",
+            security_decision=security_decision,
         )
         if not approved:
             return _result(
@@ -238,6 +321,7 @@ def execute_tool_request(
                 authorization,
                 side_effect_class=side_effect_class,
                 reason="External commitments require explicit human intent.",
+                security_decision=security_decision,
             )
             if not approved:
                 return _result(
@@ -263,6 +347,7 @@ def execute_tool_request(
             authorization,
             side_effect_class=side_effect_class,
             reason="Sensitive or destructive tool actions require exact human approval.",
+            security_decision=security_decision,
         )
         if not approved:
             return _result(
@@ -272,6 +357,34 @@ def execute_tool_request(
                 reason="sensitive_destructive_requires_approval",
                 verification_status="not_required",
                 approval=approval,
+            )
+
+    # Revalidate the security envelope immediately before the side effect. This
+    # closes authorization reuse across token expiry or mutable policy objects
+    # within the same process and keeps approval distinct from authorization.
+    if security_decision is not None:
+        try:
+            final_security = _security_decision(authorization, request, definition)
+        except SecurityBoundaryError as exc:
+            return _result(
+                request,
+                side_effect_class,
+                status="blocked",
+                reason="security_authorization_stale",
+                verification_status="not_required",
+                error=exc.code,
+            )
+        if (
+            final_security is None
+            or not final_security.get("allowed")
+            or final_security.get("binding") != security_decision.get("binding")
+        ):
+            return _result(
+                request,
+                side_effect_class,
+                status="blocked",
+                reason="security_authorization_stale",
+                verification_status="not_required",
             )
 
     try:
