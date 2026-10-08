@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/approval-decision.schema.json",
+  "title": "Manager Approval Decision",
+  "type": "object",
+  "required": ["approval_id", "decision", "decided_by", "decided_at"],
+  "properties": {
+    "approval_id": {"type": "string", "minLength": 1},
+    "decision": {"enum": ["approved", "rejected"]},
+    "decided_by": {"type": "string", "minLength": 1},
+    "decided_at": {"type": "string", "format": "date-time"},
+    "comment": {"type": "string"},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
