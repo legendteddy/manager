@@ -24,6 +24,7 @@ These schemas encode governance and integration boundaries that are documented e
 - `tool-proposal.schema.json` describes a proposed tool name and arguments without granting execution authority.
 - `tool-request.schema.json` binds a proposal to a Manager run for policy evaluation.
 - `tool-result.schema.json` records deterministic allow/block/approval/failure outcomes and verification evidence.
+- `mcp-tool-binding.schema.json` binds an explicitly configured remote MCP tool to a trusted local Manager tool definition without transferring policy authority to the MCP server.
 
 ## Design rules
 
@@ -46,7 +47,9 @@ These schemas encode governance and integration boundaries that are documented e
 17. Consequential actions in the durable reference path must checkpoint approval before execution so crash recovery cannot blindly replay a side effect.
 18. `recovery_required` may be resolved only from explicit external evidence. Confirmed non-execution creates a fresh approval identity rather than reviving the old approval.
 19. Persisted state must fail closed on corruption, impossible transitions, or unsupported checkpoint versions.
-20. Provider-executed tools must not bypass Manager's local policy boundary.
-21. Breaking contract changes are material architecture changes and require review against `GOVERNANCE.md` and `docs/protected-surfaces.md`.
+20. MCP discovery is untrusted capability metadata. Remote descriptions, annotations, and safety hints must not replace Manager-owned tool policy.
+21. An MCP binding must be explicit and must fail closed when the configured server/tool identity or discovered input schema drifts from the reviewed local binding.
+22. Provider-executed tools must not bypass Manager's local policy boundary.
+23. Breaking contract changes are material architecture changes and require review against `GOVERNANCE.md` and `docs/protected-surfaces.md`.
 
 Schemas use JSON Schema Draft 2020-12. CI runs a full Draft 2020-12 validator across every contract, all public eval fixtures, and representative artifacts emitted by the executable reference runtime. Narrow zero-dependency runtime validation still protects hot execution boundaries, while cross-contract conformance is enforced as a dedicated test layer.
