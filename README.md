@@ -8,9 +8,9 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Model-backed reference-runtime stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, and a provider-neutral model adapter boundary with an OpenAI Responses API reference adapter.
+**Governed tool-runtime stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, and a governed custom-tool execution path.
 
-The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary tool execution, durable approval/state storage, provider failover, or general-purpose autonomous agent execution.
+The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, durable approval/state storage, provider failover, transaction rollback orchestration, or general-purpose autonomous agent execution.
 
 ## Core principles
 
@@ -70,9 +70,9 @@ tracing + evals
 
 Internal components use conventional technical terms such as `orchestrator`, `router`, `capability`, `specialist agent`, `policy`, `approval`, `state`, `evaluator`, `reconciliation`, `tracing`, `eval`, and `adapter`.
 
-## Provider boundary
+## Provider and tool boundary
 
-Manager's deterministic governance remains outside model providers.
+Manager's deterministic governance remains outside model providers and tool implementations.
 
 ```text
 Manager control plane
@@ -81,16 +81,18 @@ provider-neutral model request
       ↓
 model adapter
       ↓
-provider SDK / API
+model response / tool proposal
       ↓
-normalized model response
+trusted ToolRegistry + deterministic policy
       ↓
-Manager result + trace
+execute / block / require approval
+      ↓
+verification + ToolResult + trace
 ```
 
-A model response supplies content inside an already-authorized workflow. It cannot approve a material action, widen tool permissions, redefine state ownership, or bypass reconciliation.
+A model response supplies content or proposes a tool inside an already-bounded workflow. It cannot approve a material action, lower a tool's side-effect class, grant itself authorization, redefine state ownership, or bypass reconciliation.
 
-The first reference provider adapter targets OpenAI's Responses API. It is optional. Canonical Manager contracts remain provider-neutral and do not hard-code a default model.
+The first reference provider adapter targets OpenAI's Responses API. Stage 5 exposes only application-owned custom function definitions to the model; the provider adapter normalizes function calls into proposals and never executes them itself.
 
 ## Reference runtime
 
@@ -100,9 +102,10 @@ From the repository root:
 
 ```bash
 PYTHONPATH=runtime/python python3 -m manager_runtime.evals evals/cases
+PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -v
 ```
 
-The deterministic eval suite does not require provider credentials or network access. Model-backed execution is optional and uses an explicit provider adapter.
+The deterministic eval and unit-test suite does not require provider credentials, live tools, or network access. Model-backed execution is optional and uses an explicit provider adapter.
 
 ## Manager, MCP, and product integrations
 
@@ -112,7 +115,7 @@ Manager is the core framework/runtime concept.
 - **MCP**: optional interoperability adapter, not Manager's identity.
 - **Product/plugin integration**: optional distribution or integration surface.
 
-Provider- or product-specific behavior belongs behind adapters rather than inside canonical contracts.
+Provider- or product-specific behavior belongs behind adapters rather than inside canonical contracts. Provider-managed MCP execution is not enabled in the Stage 5 reference path because tool execution must remain behind Manager's policy and approval boundary.
 
 ## Repository map
 
@@ -121,8 +124,9 @@ Provider- or product-specific behavior belongs behind adapters rather than insid
 - [`SECURITY.md`](SECURITY.md): untrusted content, access, side effects, secrets, and public safety
 - [`AGENTS.md`](AGENTS.md): instructions for AI systems working in this repository
 - [`contracts/`](contracts/): provider-neutral machine-readable contracts
-- [`runtime/python/`](runtime/python/): Python reference control plane and provider adapters
+- [`runtime/python/`](runtime/python/): Python reference control plane, provider adapters, and governed tool runtime
 - [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
+- [`docs/tool-runtime.md`](docs/tool-runtime.md): tool proposal, policy, approval, execution, and verification boundary
 - [`docs/handoffs.md`](docs/handoffs.md): bounded delegation contract
 - [`docs/reconciliation.md`](docs/reconciliation.md): authoritative-state reconciliation
 - [`docs/evidence.md`](docs/evidence.md): evidence and claim discipline
@@ -138,6 +142,6 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has an executable deterministic reference control plane and a first model-provider adapter boundary. Current CI verifies public-repository integrity, Python compilation, unit tests, and deterministic behavioral evals without requiring provider credentials.
+Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, and a governed synthetic custom-tool runtime. Current CI verifies public-repository integrity, Python compilation, unit tests, and deterministic behavioral evals without requiring provider credentials or live external side effects.
 
-Claims such as "secure", "behaviorally equivalent", "production-ready", or "safe for autonomous external side effects" require additional evidence for that exact claim.
+Claims such as "secure", "behaviorally equivalent", "production-ready", or "safe for autonomous production side effects" require additional evidence for that exact claim.
