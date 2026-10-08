@@ -20,9 +20,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN groupadd --gid "${MANAGER_GID}" manager \
     && useradd --uid "${MANAGER_UID}" --gid "${MANAGER_GID}" --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin manager \
     && install -d -o manager -g manager -m 0750 /var/lib/manager /var/lib/manager/state /var/run/manager /run/secrets
-COPY --from=builder /wheels/*.whl /tmp/manager.whl
-RUN python -m pip install --no-cache-dir --disable-pip-version-check --no-deps /tmp/manager.whl \
-    && rm -f /tmp/manager.whl
+COPY --from=builder /wheels/ /tmp/wheels/
+RUN python -m pip install --no-cache-dir --disable-pip-version-check --no-deps /tmp/wheels/*.whl \
+    && rm -rf /tmp/wheels
 USER ${MANAGER_UID}:${MANAGER_GID}
 WORKDIR /var/lib/manager
 ENTRYPOINT ["manager-deployment"]
