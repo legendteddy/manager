@@ -217,8 +217,13 @@ def _current_scope_authorized(
     current_authorization: dict[str, Any],
     request: dict[str, Any],
     definition: dict[str, Any],
-) -> bool:
-    """Resolve current scope without letting approval substitute for authorization."""
+) -> tuple[bool, bool]:
+    """Resolve current scope without letting approval substitute for authorization.
+
+    Returns `(scope_authorized, strict_security_active)`. The strict decision is
+    deliberately made while the run is still waiting for approval so an identity
+    or revocation backend failure cannot create durable execution intent.
+    """
     try:
         security_decision = evaluate_tool_authorization(
             current_authorization, request, definition
@@ -230,8 +235,8 @@ def _current_scope_authorized(
     if security_decision is not None:
         if not security_decision.get("allowed"):
             raise RunStateError("current security authorization is required before resume")
-        return True
-    return _authorization_flag(current_authorization, "scope_authorized")
+        return True, True
+    return _authorization_flag(current_authorization, "scope_authorized"), False
 
 
 def resume_tool_approval(
@@ -340,7 +345,7 @@ def resume_tool_approval(
         return store.compare_and_swap(run_id, state["revision"], cancelled)
 
     side_effect_class = registered.definition["side_effect_class"]
-    scope_authorized = _current_scope_authorized(
+    scope_authorized, strict_security_active = _current_scope_authorized(
         current_authorization, request, registered.definition
     )
     target_verified = _authorization_flag(current_authorization, "target_verified")
@@ -367,7 +372,7 @@ def resume_tool_approval(
     # _safe_authorization_context(); stripping here would remove the fresh
     # principal/policy needed to prove that an old approval is still authorized.
     authorization = dict(current_authorization)
-    if evaluate_tool_authorization(authorization, request, registered.definition) is not None:
+    if strict_security_active:
         authorization["scope_authorized"] = True
     authorization["approval"] = resolved
     result = execute_tool_request(executing["task"], request, registry, authorization)
