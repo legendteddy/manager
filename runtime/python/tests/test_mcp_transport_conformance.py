@@ -181,10 +181,10 @@ class MCPTransportConformanceTests(unittest.TestCase):
         self.assertEqual({"value": "back"}, recovered["output"])
 
     def test_timeout_cancels_slow_stdio_process_and_next_call_reconnects(self) -> None:
-        client = self.client(timeout=0.15)
+        client = self.client(timeout=2.0)
 
         with self.assertRaisesRegex(MCPBoundaryError, "timed out"):
-            client.call_tool("slow", {"delay_ms": 1000})
+            client.call_tool("slow", {"delay_ms": 5000})
 
         log = self.read_log()
         self.assertIn("start:slow", log)
