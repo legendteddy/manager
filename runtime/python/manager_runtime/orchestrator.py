@@ -4,10 +4,13 @@ from typing import Any
 
 from .engine import run as run_control_plane
 from .providers.base import ModelAdapter, ModelPayload, validate_model_response
+from .tools.base import ToolRegistry
+from .tools.runtime import execute_tool_request
 
 MODEL_INSTRUCTIONS = (
-    "You are a bounded text-generation capability inside Manager. "
-    "Produce only the requested user-facing content. "
+    "You are a bounded capability inside Manager. "
+    "Produce requested user-facing content or propose only tools explicitly offered to you. "
+    "A tool proposal is not authorization and you must not claim that a proposed tool ran. "
     "Do not claim that you approved, executed, deployed, persisted, or verified "
     "an external side effect. Governance, authority, approvals, tool execution, "
     "and reconciliation are controlled outside the model."
@@ -32,12 +35,16 @@ def run_with_model(
     model: str,
     max_output_tokens: int | None = None,
     allow_non_public_input: bool = False,
+    tool_definitions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run deterministic governance first, then a bounded model call if eligible.
 
     Only the direct workflow is model-backed in this reference stage. Material
     or blocked work never reaches the provider. Non-public inputs are withheld
     by default unless the embedding application explicitly permits them.
+
+    Tool definitions are proposal surfaces only. A provider may return tool
+    proposals, but this function does not execute them.
     """
     output = run_control_plane(task_input)
     trace = output["trace"]
@@ -73,6 +80,8 @@ def run_with_model(
     }
     if max_output_tokens is not None:
         request["max_output_tokens"] = max_output_tokens
+    if tool_definitions:
+        request["tools"] = tool_definitions
 
     response = adapter.generate(request)
     validate_model_response(response)
@@ -100,4 +109,114 @@ def run_with_model(
         }
     ]
     output["model_response"] = response
+    return output
+
+
+def run_with_model_and_tools(
+    task_input: dict[str, Any],
+    adapter: ModelAdapter,
+    registry: ToolRegistry,
+    *,
+    model: str,
+    allowed_tools: list[str],
+    authorization_contexts: dict[str, dict[str, Any]] | None = None,
+    max_output_tokens: int | None = None,
+    allow_non_public_input: bool = False,
+) -> dict[str, Any]:
+    """Let a model propose tools, then govern each proposal locally.
+
+    Stage 5 executes proposals once and records their results. It intentionally
+    does not send tool outputs back to the model for a continuation turn.
+    """
+    definitions = registry.model_definitions(allowed_tools)
+    output = run_with_model(
+        task_input,
+        adapter,
+        model=model,
+        max_output_tokens=max_output_tokens,
+        allow_non_public_input=allow_non_public_input,
+        tool_definitions=definitions,
+    )
+    response = output.get("model_response")
+    if not isinstance(response, dict):
+        return output
+
+    proposals = response.get("tool_proposals") or []
+    if not proposals:
+        output["tool_results"] = []
+        return output
+
+    allowed = set(allowed_tools)
+    authorization_contexts = authorization_contexts or {}
+    task = task_input["task"]
+    trace = output["trace"]
+    results: list[dict[str, Any]] = []
+
+    for proposal in proposals:
+        tool_name = proposal["tool_name"]
+        request = {
+            "request_id": f"tool-request:{proposal['proposal_id']}",
+            "run_id": trace["run_id"],
+            "tool_name": tool_name,
+            "arguments": proposal["arguments"],
+            "target": proposal.get("target"),
+            "proposed_by": "model",
+            "proposal_ref": proposal["proposal_id"],
+        }
+
+        if tool_name not in allowed:
+            result = {
+                "request_id": request["request_id"],
+                "tool_name": tool_name,
+                "status": "blocked",
+                "side_effect_class": "analysis",
+                "decision_reason": "tool_not_exposed_to_model",
+                "verification": {"status": "not_required", "details": ""},
+                "approval_ref": None,
+                "error": None,
+                "redacted": False,
+            }
+        else:
+            context = dict(authorization_contexts.get(tool_name, {}))
+            registered = registry.get(tool_name)
+            if registered is not None and registered.definition["side_effect_class"] in {
+                "analysis",
+                "read",
+            }:
+                context.setdefault("scope_authorized", True)
+            result = execute_tool_request(task, request, registry, context)
+
+        results.append(result)
+        trace["events"].append(
+            {
+                "event_type": "tool",
+                "status": result["status"],
+                "reference": request["request_id"],
+                "summary": f"Governed tool request for {tool_name} ended with status {result['status']}.",
+            }
+        )
+        approval_ref = result.get("approval_ref")
+        if approval_ref:
+            trace.setdefault("approval_refs", [])
+            if approval_ref not in trace["approval_refs"]:
+                trace["approval_refs"].append(approval_ref)
+
+    output["tool_results"] = results
+    statuses = {item["status"] for item in results}
+    result_envelope = output["result"]
+
+    if "approval_required" in statuses:
+        trace["status"] = "blocked"
+        result_envelope["status"] = "blocked"
+        result_envelope["owner_decision_required"] = True
+        result_envelope["decision_request"] = "Review the pending tool approval request."
+    elif "failed" in statuses:
+        trace["status"] = "failed"
+        result_envelope["status"] = "failed"
+        result_envelope["uncertainties"] = ["At least one governed tool execution or verification failed."]
+    elif "blocked" in statuses:
+        trace["status"] = "blocked"
+        result_envelope["status"] = "blocked"
+        result_envelope["uncertainties"] = ["At least one tool proposal was outside authorized execution scope."]
+
     return output
