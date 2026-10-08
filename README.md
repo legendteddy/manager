@@ -8,9 +8,9 @@ Manager is a clean public successor to an earlier private agent-governance archi
 
 ## Status
 
-**Governed MCP interoperability stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, resumable loop checkpoints, full contract-conformance testing, legal durable-state transition validation, explicit evidence-based recovery resolution, and a Manager-owned MCP adapter boundary.
+**Governed MCP transport-conformance stage.** Manager now has provider-neutral machine-readable contracts, deterministic behavioral eval fixtures, a Python reference control plane, a provider-neutral model adapter boundary, an OpenAI Responses API reference adapter, governed custom-tool execution, durable approval checkpoints, bounded multi-step model/tool continuation, resumable loop checkpoints, full contract-conformance testing, legal durable-state transition validation, explicit evidence-based recovery resolution, a Manager-owned MCP adapter boundary, and end-to-end stdio protocol tests through the official MCP Python SDK.
 
-The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, automatic trust of MCP servers, provider-managed MCP execution, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
+The implemented runtime is intentionally narrow. It does not claim production readiness, behavioral parity with the private reference, arbitrary production tool access, automatic trust of MCP servers, provider-managed MCP execution, Streamable HTTP conformance, production OAuth/credential handling, exactly-once external side effects, distributed state/locking, provider failover, transaction rollback orchestration, or unrestricted autonomous agent execution.
 
 ## Core principles
 
@@ -123,11 +123,11 @@ persisted loop checkpoint for restart/resume
 
 A model response supplies content or proposes a tool inside an already-bounded workflow. It cannot approve a material action, lower a tool's side-effect class, grant itself authorization, redefine state ownership, resolve an uncertain external side effect, or bypass reconciliation.
 
-An MCP server may advertise tool names, schemas, descriptions, and annotations. Manager treats those values as untrusted discovery metadata. Only explicitly configured bindings enter the trusted registry, and local Manager configuration remains authoritative for descriptions, side-effect class, verification, sensitivity, and versioning. Schema or binding drift fails closed.
+An MCP server may advertise tool names, schemas, descriptions, and annotations. Manager treats those values as untrusted discovery metadata. Only explicitly configured bindings enter the trusted registry, and local Manager configuration remains authoritative for descriptions, side-effect class, verification, sensitivity, and versioning. Schema or binding drift fails closed at registration and is revalidated again immediately before execution.
 
 The first reference provider adapter targets OpenAI's Responses API. The adapter normalizes custom function calls into proposals and maps verified continuation results through `previous_response_id` plus `function_call_output`; execution remains application-owned.
 
-The optional MCP reference bridge targets the official MCP Python SDK v2 line. Connection targets, process commands, URLs, credentials, and OAuth configuration stay outside Manager's canonical contracts.
+The optional MCP reference bridge targets the official MCP Python SDK v2 line. Connection targets, process commands, URLs, credentials, and OAuth configuration stay outside Manager's canonical contracts. CI now exercises the bridge end to end against a synthetic local stdio MCP subprocess, including timeout/cancellation cleanup and reconnect behavior.
 
 The first durable state adapter uses SQLite through Python's standard library. It is a reference durability layer, not an encryption boundary, distributed lock service, or universal production datastore recommendation.
 
@@ -149,9 +149,10 @@ Optional reference integrations:
 ```bash
 python3 -m pip install -e 'runtime/python[openai]'
 python3 -m pip install -e 'runtime/python[mcp]'
+PYTHONPATH=runtime/python python3 -m unittest discover -s runtime/python/tests -p 'test_mcp_transport_conformance.py' -v
 ```
 
-The deterministic eval and unit-test suite does not require provider credentials, live MCP servers, live tools, network model calls, or production state stores. Schema conformance uses `jsonschema` as a test-only dependency.
+The deterministic eval and base unit-test suite does not require provider credentials, live external MCP services, live production tools, network model calls, or production state stores. The dedicated MCP transport suite uses only a synthetic local subprocess. Schema conformance uses `jsonschema` as a test-only dependency.
 
 ## Manager, MCP, and product integrations
 
@@ -174,6 +175,7 @@ Manager-owned MCP adapters keep discovery and execution behind the same trusted 
 - [`docs/model-adapters.md`](docs/model-adapters.md): model-provider boundary and data rules
 - [`docs/tool-runtime.md`](docs/tool-runtime.md): tool proposal, policy, approval, execution, and verification boundary
 - [`docs/mcp-adapters.md`](docs/mcp-adapters.md): MCP discovery, binding, trust, and execution boundary
+- [`docs/mcp-transport-conformance.md`](docs/mcp-transport-conformance.md): official SDK stdio transport evidence and limits
 - [`docs/agent-loop.md`](docs/agent-loop.md): finite multi-step model/tool continuation and stop conditions
 - [`docs/durable-agent-loop.md`](docs/durable-agent-loop.md): persisted loop phases, restart invariants, and durable continuation behavior
 - [`docs/run-state.md`](docs/run-state.md): durable checkpoints, resumable approvals, and recovery-required behavior
@@ -193,6 +195,6 @@ Licensed under the [Apache License 2.0](LICENSE).
 
 ## Maturity
 
-Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, a tested durable loop-resume path, full Draft 2020-12 conformance checks for representative emitted artifacts, legal state-transition enforcement, corrupted-state rejection, an explicit recovery protocol for uncertain external outcomes, and a tested Manager-owned MCP tool-binding boundary with an optional official SDK bridge. Current CI verifies public-repository integrity, Python compilation, unit tests, deterministic behavioral evals, and schema conformance without requiring provider credentials, live MCP servers, or live external side effects.
+Manager has an executable deterministic reference control plane, a first model-provider adapter boundary, governed synthetic custom-tool execution, durable exact approval checkpoints, a bounded multi-step agent loop, a tested durable loop-resume path, full Draft 2020-12 conformance checks for representative emitted artifacts, legal state-transition enforcement, corrupted-state rejection, an explicit recovery protocol for uncertain external outcomes, a tested Manager-owned MCP tool-binding boundary, and an end-to-end official-SDK stdio transport suite using only a synthetic local subprocess. Current CI verifies public-repository integrity, Python compilation, unit tests, deterministic behavioral evals, schema conformance, and MCP stdio transport behavior without provider credentials or live external side effects.
 
-Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", "distributed", "trusted MCP", or "safe for autonomous production side effects" require additional evidence for that exact claim.
+Claims such as "secure", "behaviorally equivalent", "production-ready", "exactly once", "distributed", "trusted MCP", "Streamable HTTP conformant", or "safe for autonomous production side effects" require additional evidence for that exact claim.
