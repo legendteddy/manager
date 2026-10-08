@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/legendteddy/manager/contracts/run-state.schema.json",
+  "title": "Manager Run State",
+  "type": "object",
+  "required": ["run_id", "task_id", "status", "revision", "created_at", "updated_at"],
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "status": {
+      "enum": ["running", "waiting_approval", "executing", "completed", "failed", "cancelled", "recovery_required"]
+    },
+    "revision": {"type": "integer", "minimum": 1},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "task": {"type": "object", "additionalProperties": true},
+    "pending_action": {
+      "type": ["object", "null"],
+      "properties": {
+        "tool_request": {"$ref": "tool-request.schema.json"},
+        "approval": {"$ref": "approval.schema.json"},
+        "tool_definition_fingerprint": {"type": "string", "minLength": 1},
+        "authorization_context": {"type": "object", "additionalProperties": true}
+      },
+      "required": ["tool_request", "approval", "tool_definition_fingerprint"],
+      "additionalProperties": false
+    },
+    "last_tool_result": {"anyOf": [{"$ref": "tool-result.schema.json"}, {"type": "null"}]},
+    "trace_snapshot": {"type": ["object", "null"], "additionalProperties": true},
+    "result_snapshot": {"type": ["object", "null"], "additionalProperties": true},
+    "recovery_reason": {"type": ["string", "null"]},
+    "extensions": {"type": "object", "additionalProperties": true}
+  },
+  "additionalProperties": false
+}
