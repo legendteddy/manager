@@ -50,13 +50,16 @@ def policy(revision="r1", capability="tools.write"):
     }
 
 
-def auth(revision="r1", principal=None):
+def auth(revision="r1", principal=None, principal_revalidator=None):
+    context = {
+        "principal": principal or identity(),
+        "environment": "prod",
+    }
+    if principal_revalidator is not None:
+        context["principal_revalidator"] = principal_revalidator
     return {
         "require_security_context": True,
-        "security_context": {
-            "principal": principal or identity(),
-            "environment": "prod",
-        },
+        "security_context": context,
         "security_policy": policy(revision),
     }
 
@@ -150,6 +153,28 @@ class IntegrationTests(unittest.TestCase):
         result = execute_tool_request(task(), request(), self.registry, current)
         self.assertEqual("blocked", result["status"])
         self.assertEqual("invalid_security_context", result["decision_reason"])
+        self.assertEqual(0, self.adapter.calls)
+
+    def test_principal_revoked_between_approval_check_and_execution_is_blocked(self):
+        principal = identity()
+        first = execute_tool_request(
+            task(), request(), self.registry, auth(principal=principal)
+        )
+        approved = dict(first["approval"], status="approved")
+        checks = iter((True, False))
+
+        def still_current(_identity: dict) -> bool:
+            return next(checks)
+
+        current = auth(
+            principal=principal,
+            principal_revalidator=still_current,
+        )
+        current["approval"] = approved
+        result = execute_tool_request(task(), request(), self.registry, current)
+
+        self.assertEqual("blocked", result["status"])
+        self.assertEqual("security_authorization_stale", result["decision_reason"])
         self.assertEqual(0, self.adapter.calls)
 
 
