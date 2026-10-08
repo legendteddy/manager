@@ -4,10 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "manager-reference-runtime"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python reference control-plane runtime for Manager"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
+
+[project.optional-dependencies]
+openai = ["openai>=3.20,<4"]
 
 [tool.setuptools.packages.find]
 where = ["."]
