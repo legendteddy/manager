@@ -173,6 +173,18 @@ class SREObservabilityTests(unittest.TestCase):
         self.assertEqual(span.labels, {})
         self.assertEqual(telemetry.sanitization_failures, 1)
 
+    def test_operation_telemetry_mapping_cannot_replace_primary_failure(self):
+        operations = OperationalRuntime(telemetry_sink=InMemoryTelemetrySink(32))
+        with self.assertRaisesRegex(RuntimeError, "primary operation failed"):
+            with operations.operation(
+                "run",
+                labels=BrokenMapping(),
+                attributes=BrokenMapping(),
+            ):
+                raise RuntimeError("primary operation failed")
+        self.assertEqual(operations.capacity.runs.active, 0)
+        self.assertGreaterEqual(operations.telemetry.sanitization_failures, 2)
+
     def test_sanitization_failure_degrades_operational_health(self):
         operations = OperationalRuntime(telemetry_sink=InMemoryTelemetrySink(8))
         operations.telemetry.event("run.started", attributes=BrokenMapping())
