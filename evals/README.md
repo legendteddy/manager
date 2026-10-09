@@ -46,9 +46,11 @@ The executable deterministic fixture set currently covers:
 12. the newest explicit maintainer instruction wins within the modeled authority order;
 13. authority scoped to another domain is ignored;
 14. stricter repository-local/subsystem constraints remain binding under broader governance;
-15. inferred memory cannot override current authoritative state.
+15. inferred memory cannot override current authoritative state;
+16. unknown/unclassified instruction sources fail closed when no real authority remains;
+17. older context remains usable only as the lowest-precedence applicable context.
 
-The precedence fixtures use a synthetic `prior_state.precedence_context` supplied by the eval harness. It represents application-owned source classification and context-loading state for deterministic testing only. It does not make repository text, retrieved content, conversation history, or memory authoritative by itself.
+The precedence fixtures use a synthetic `prior_state.precedence_context` supplied by the eval harness. It represents application-owned source classification and context-loading state for deterministic testing only. It does not make repository text or retrieved content authoritative by itself, and it does not let older conversation or memory outrank current governance or state.
 
 The broader strategy additionally calls for future coverage of unnecessary specialist rejection, justified parallelism, evaluator ownership boundaries, unsupported readiness claims, failure recovery, private reference anonymity, evidence-class separation, and bounded evolution.
 
