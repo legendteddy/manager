@@ -18,11 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SELF = Path(__file__).resolve()
 CONTRACTS_DIR = ROOT / "contracts"
 EVAL_CASES_DIR = ROOT / "evals" / "cases"
-SUPPLY_CHAIN_WORKFLOWS = (
-    ROOT / ".github" / "workflows" / "repository-integrity.yml",
-    ROOT / ".github" / "workflows" / "release-candidate.yml",
-    ROOT / ".github" / "workflows" / "release-publish.yml",
-    ROOT / ".github" / "workflows" / "dependency-vulnerability.yml",
+WORKFLOWS_DIR = ROOT / ".github" / "workflows"
+SUPPLY_CHAIN_WORKFLOWS = tuple(
+    sorted({*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml")})
 )
 
 RISKY_FILENAMES = {
