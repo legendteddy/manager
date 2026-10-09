@@ -67,14 +67,29 @@ class HealthRegistry:
 
     @staticmethod
     def _evaluate_dependency(dependency: DependencyCheck) -> tuple[bool, str]:
+        """Evaluate one readiness dependency without trusting callback output.
+
+        Dependency checks sit on an operational safety boundary. A buggy or hostile
+        check must make readiness fail closed instead of crashing the probe or
+        running arbitrary coercion hooks while formatting diagnostic output.
+        """
         try:
             result = dependency.check()
         except Exception as exc:
             return False, f"check raised {type(exc).__name__}"
-        if isinstance(result, tuple):
-            ok, detail = result
-            return bool(ok), str(detail)
-        return bool(result), "ok" if result else "unavailable"
+
+        if isinstance(result, bool):
+            return result, "ok" if result else "unavailable"
+
+        if type(result) is not tuple or len(result) != 2:
+            return False, "invalid dependency check result"
+
+        ok, detail = result
+        if not isinstance(ok, bool) or type(detail) is not str:
+            return False, "invalid dependency check result"
+        if not detail or len(detail) > 256 or any(char in detail for char in ("\x00", "\r", "\n")):
+            return False, "invalid dependency check detail"
+        return ok, detail
 
     def readiness(self) -> dict[str, object]:
         with self._lock:
