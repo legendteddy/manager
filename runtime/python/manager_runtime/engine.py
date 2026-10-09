@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .reconciliation import run_reconciliation
+from .reconciliation_evidence import enforce_reconciliation_completion
 
 
 def _now() -> str:
@@ -176,12 +177,16 @@ def run(task_input: dict[str, Any]) -> dict[str, Any]:
         "propagate" in objective_lower and "confirmed" in objective_lower
     )
     if reconciliation_intent:
-        return run_reconciliation(
+        reconciliation_outputs = run_reconciliation(
             task,
             reconciliation_context,
             make_approval=_approval,
             make_result=_result,
             make_trace=_trace,
+        )
+        return enforce_reconciliation_completion(
+            reconciliation_context,
+            reconciliation_outputs,
         )
 
     if "specialist" in objective_lower:
