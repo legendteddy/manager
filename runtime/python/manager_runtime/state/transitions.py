@@ -39,8 +39,56 @@ ALLOWED_TRANSITIONS = {
     "cancelled": set(),
 }
 
+_RECOVERY_EXIT_STATUSES = {
+    "confirmed_succeeded": {"running", "completed"},
+    "confirmed_not_executed": {"waiting_approval"},
+    "cancelled": {"cancelled"},
+}
+
+
+def _validate_recovery_resolution_transition(
+    previous: RunState, candidate: RunState
+) -> None:
+    previous_resolution = previous.get("recovery_resolution")
+    candidate_resolution = candidate.get("recovery_resolution")
+
+    if (
+        previous["status"] == "recovery_required"
+        and candidate["status"] != "recovery_required"
+    ):
+        if previous_resolution is not None:
+            raise RunStateError(
+                "recovery_required state already contains resolution evidence before exit"
+            )
+        if not isinstance(candidate_resolution, dict):
+            raise RunStateError(
+                "leaving recovery_required requires explicit recovery_resolution evidence"
+            )
+        if candidate.get("recovery_reason") is not None:
+            raise RunStateError(
+                "leaving recovery_required must clear recovery_reason"
+            )
+        decision = candidate_resolution.get("decision")
+        allowed = _RECOVERY_EXIT_STATUSES.get(decision, set())
+        if candidate["status"] not in allowed:
+            raise RunStateError(
+                "recovery resolution decision is incompatible with the target run status"
+            )
+        return
+
+    if previous_resolution is None:
+        if candidate_resolution is not None:
+            raise RunStateError(
+                "recovery_resolution can only be recorded when leaving recovery_required"
+            )
+        return
+
+    if candidate_resolution != previous_resolution:
+        raise RunStateError("recovery_resolution is immutable once recorded")
+
 
 def validate_run_state_transition(previous: RunState, candidate: RunState) -> None:
+    """Validate the provider-neutral run status graph and immutable identity."""
     validate_run_state_shape(previous)
     validate_run_state_shape(candidate)
     if previous["run_id"] != candidate["run_id"]:
@@ -60,3 +108,16 @@ def validate_run_state_transition(previous: RunState, candidate: RunState) -> No
         raise RunStateError(
             f"invalid run-state transition: {previous['status']} -> {candidate['status']}"
         )
+
+
+def validate_durable_run_state_transition(
+    previous: RunState, candidate: RunState
+) -> None:
+    """Validate a transition before it becomes authoritative durable state.
+
+    The ordinary transition validator describes the status graph. Durable stores
+    additionally bind exits from ``recovery_required`` to explicit resolution
+    evidence and keep that evidence immutable after it is recorded.
+    """
+    validate_run_state_transition(previous, candidate)
+    _validate_recovery_resolution_transition(previous, candidate)

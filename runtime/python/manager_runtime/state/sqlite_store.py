@@ -5,9 +5,11 @@ from copy import deepcopy
 
 from .base import RunLeaseConflict, RunState, RunStateError
 from .sqlite_store_v2 import SQLiteRunStore as _SQLiteRunStoreV2
+from .transitions import validate_durable_run_state_transition
 
 SQLITE_STATE_SCHEMA_VERSION = 3
 _SQLITE_RUNTIME_PROTOCOL_FUNCTION = "manager_runtime_schema_version"
+_SQLITE_RUNTIME_GUARD_MESSAGE = "Manager runtime is too old for this coordinated SQLite schema"
 _SQLITE_RUNTIME_GUARD_TRIGGERS = {
     "manager_runs_runtime_guard_insert": "INSERT",
     "manager_runs_runtime_guard_update": "UPDATE",
@@ -68,6 +70,24 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
         )
         return connection
 
+    def _compare_and_swap_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        expected_revision: int,
+        candidate: RunState,
+    ) -> RunState:
+        """Apply v3 durable recovery invariants inside the write transaction."""
+        row = connection.execute(
+            "SELECT state_json FROM manager_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is not None:
+            previous = self._decoded(row["state_json"])
+            validate_durable_run_state_transition(previous, candidate)
+        return super()._compare_and_swap_in_connection(
+            connection, run_id, expected_revision, candidate
+        )
+
     def compare_and_swap(
         self, run_id: str, expected_revision: int, state: RunState
     ) -> RunState:
@@ -109,7 +129,6 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
 
     @staticmethod
     def _create_runtime_guard_triggers(connection: sqlite3.Connection) -> None:
-        message = "Manager runtime is too old for this coordinated SQLite schema"
         for name, operation in _SQLITE_RUNTIME_GUARD_TRIGGERS.items():
             connection.execute(
                 f"""
@@ -118,7 +137,7 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
                 BEGIN
                     SELECT CASE
                         WHEN {_SQLITE_RUNTIME_PROTOCOL_FUNCTION}() < 3
-                        THEN RAISE(ABORT, '{message}')
+                        THEN RAISE(ABORT, '{_SQLITE_RUNTIME_GUARD_MESSAGE}')
                     END;
                 END
                 """
@@ -184,6 +203,25 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
             )
 
     @staticmethod
+    def _expected_runtime_guard_sql(name: str, operation: str) -> str:
+        # sqlite_master stores CREATE TRIGGER without the optional IF NOT EXISTS
+        # clause. Compare the complete normalized definition rather than looking
+        # for a few trusted substrings; otherwise an attacker/corruption can add
+        # a disabling WHEN clause while retaining those substrings.
+        return " ".join(
+            f"""
+            CREATE TRIGGER {name}
+            BEFORE {operation} ON manager_runs
+            BEGIN
+                SELECT CASE
+                    WHEN {_SQLITE_RUNTIME_PROTOCOL_FUNCTION}() < 3
+                    THEN RAISE(ABORT, '{_SQLITE_RUNTIME_GUARD_MESSAGE}')
+                END;
+            END
+            """.upper().split()
+        )
+
+    @staticmethod
     def _validate_v3_schema(connection: sqlite3.Connection) -> None:
         tables = {
             row["name"]
@@ -212,11 +250,8 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
                     f"SQLite coordinated runtime guard is incomplete: {name}"
                 )
             normalized = " ".join(sql.upper().split())
-            if (
-                f"BEFORE {operation} ON MANAGER_RUNS" not in normalized
-                or f"{_SQLITE_RUNTIME_PROTOCOL_FUNCTION.upper()}()" not in normalized
-                or "RAISE(ABORT" not in normalized
-            ):
+            expected = SQLiteRunStore._expected_runtime_guard_sql(name, operation)
+            if normalized != expected:
                 raise RunStateError(
                     f"SQLite coordinated runtime guard is malformed: {name}"
                 )
