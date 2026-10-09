@@ -4,14 +4,8 @@
 reference/control-plane HTTP path used by existing tests and examples.
 """
 
+from . import gateway as _gateway
 from .api import ApiError, DurableRuntimeBackend, ServiceBackend
-from .gateway import (
-    GatewayContext,
-    GatewaySettings,
-    create_gateway_server,
-    load_gateway_settings,
-    run_service,
-)
 from .http_policy import install_http_policy
 from .server import (
     ManagerServiceContext,
@@ -22,8 +16,15 @@ from .server import (
 )
 
 # Importing any manager_runtime.service submodule first initializes this package.
-# Install the HTTP/1.1 framing policy once before callers can construct a gateway.
+# Install the HTTP/config policy before exporting construction helpers so direct
+# package callers cannot retain the pre-hardening factory object.
 install_http_policy()
+
+GatewayContext = _gateway.GatewayContext
+GatewaySettings = _gateway.GatewaySettings
+create_gateway_server = _gateway.create_gateway_server
+load_gateway_settings = _gateway.load_gateway_settings
+run_service = _gateway.run_service
 
 __all__ = [
     "ApiError",
