@@ -12,6 +12,8 @@ import tomllib
 from pathlib import Path
 
 NAME_RE = re.compile(r"[-_.]+")
+BUILD_TYPE = "https://github.com/legendteddy/manager/release-candidate/v1"
+BUILDER_ID = "https://github.com/legendteddy/manager/scripts/build_release_candidate.py"
 
 
 def normalize_name(name: str) -> str:
@@ -85,6 +87,26 @@ def expected_requirements(lock: dict[str, object]) -> str:
             raise ValueError(f"unsafe or non-wheel dependency filename: {filename}")
         lines.append(f"{name}=={version} --hash=sha256:{digest}")
     return "\n".join(lines) + "\n"
+
+
+def expected_dependency_records(lock: dict[str, object]) -> dict[str, tuple[str, str, str]]:
+    packages = lock.get("packages")
+    if not isinstance(packages, list) or not packages:
+        raise ValueError("dependency lock packages must be a non-empty array")
+    result: dict[str, tuple[str, str, str]] = {}
+    for package in packages:
+        if not isinstance(package, dict):
+            raise ValueError("dependency lock package must be an object")
+        name = package.get("name")
+        version = package.get("version")
+        filename = package.get("filename")
+        digest = require_hex_sha256(package.get("sha256"), "dependency hash")
+        if not all(isinstance(value, str) and value for value in (name, version, filename)):
+            raise ValueError("dependency lock package fields must be non-empty strings")
+        if name in result:
+            raise ValueError(f"duplicate dependency project in lock: {name}")
+        result[name] = (version, filename, digest)
+    return result
 
 
 def verify_candidate(
@@ -194,6 +216,14 @@ def verify_candidate(
         if expected_files.get(relative) != digest:
             raise ValueError(f"dependency manifest hash mismatch for {filename}")
 
+    manifest_dependency_files = {path for path in expected_files if path.startswith("dependencies/")}
+    if manifest_dependency_files != dependency_files:
+        missing = sorted(dependency_files - manifest_dependency_files)
+        extra = sorted(manifest_dependency_files - dependency_files)
+        raise ValueError(
+            f"dependency wheelhouse does not exactly match dependency lock: missing={missing}, extra={extra}"
+        )
+
     roots = lock.get("roots")
     if not isinstance(roots, list) or not roots:
         raise ValueError("dependency lock roots must be a non-empty array")
@@ -220,7 +250,13 @@ def verify_candidate(
     metadata = sbom.get("metadata")
     if not isinstance(metadata, dict) or not isinstance(metadata.get("component"), dict):
         raise ValueError("SBOM metadata.component is missing")
-    properties = metadata["component"].get("properties")
+    sbom_project = metadata["component"]
+    if sbom_project.get("name") != project or sbom_project.get("version") != version:
+        raise ValueError("SBOM project identity mismatch")
+    expected_project_purl = f"pkg:pypi/{normalize_name(project)}@{version}"
+    if sbom_project.get("purl") not in {None, expected_project_purl}:
+        raise ValueError("SBOM project purl mismatch")
+    properties = sbom_project.get("properties")
     if not isinstance(properties, list):
         raise ValueError("SBOM component properties are missing")
     property_map = {
@@ -233,9 +269,55 @@ def verify_candidate(
     if property_map.get("manager:dependency-lock-sha256") != lock_digest:
         raise ValueError("SBOM dependency lock identity mismatch")
 
+    components = sbom.get("components")
+    if not isinstance(components, list):
+        raise ValueError("SBOM components must be an array")
+    observed_sbom_dependencies: dict[str, tuple[str, str, str]] = {}
+    for component in components:
+        if not isinstance(component, dict):
+            raise ValueError("SBOM dependency component must be an object")
+        name = component.get("name")
+        component_version = component.get("version")
+        if not isinstance(name, str) or not isinstance(component_version, str):
+            raise ValueError("SBOM dependency name/version must be strings")
+        if name in observed_sbom_dependencies:
+            raise ValueError(f"duplicate dependency component in SBOM: {name}")
+        expected_purl = f"pkg:pypi/{name}@{component_version}"
+        if component.get("purl") != expected_purl or component.get("bom-ref") != expected_purl:
+            raise ValueError(f"SBOM dependency purl identity mismatch: {name}")
+        hashes = component.get("hashes")
+        if not isinstance(hashes, list):
+            raise ValueError(f"SBOM dependency hashes missing: {name}")
+        sha_values = [
+            item.get("content")
+            for item in hashes
+            if isinstance(item, dict) and item.get("alg") == "SHA-256"
+        ]
+        if len(sha_values) != 1:
+            raise ValueError(f"SBOM dependency must contain exactly one SHA-256 hash: {name}")
+        digest_value = require_hex_sha256(sha_values[0], f"SBOM dependency hash for {name}")
+        component_properties = component.get("properties")
+        if not isinstance(component_properties, list):
+            raise ValueError(f"SBOM dependency properties missing: {name}")
+        component_property_map = {
+            item.get("name"): item.get("value")
+            for item in component_properties
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        filename = component_property_map.get("manager:wheel-filename")
+        if not isinstance(filename, str) or not filename:
+            raise ValueError(f"SBOM dependency wheel filename missing: {name}")
+        observed_sbom_dependencies[name] = (component_version, filename, digest_value)
+
+    expected_sbom_dependencies = expected_dependency_records(lock)
+    if observed_sbom_dependencies != expected_sbom_dependencies:
+        raise ValueError("SBOM dependency components do not exactly match dependency lock")
+
     provenance = load_json(candidate / "provenance.json")
     if provenance.get("schema_version") != "2.0":
         raise ValueError("unsupported provenance schema_version")
+    if provenance.get("project") != project:
+        raise ValueError("provenance project does not match candidate manifest")
     if provenance.get("commit_sha") != commit or provenance.get("version") != version:
         raise ValueError("provenance commit/version does not match candidate manifest")
     if provenance.get("source_tree_clean") is not True:
@@ -270,6 +352,48 @@ def verify_candidate(
         statement_subjects[subject.get("name")] = subject["digest"].get("sha256")
     if statement_subjects != artifact_entries:
         raise ValueError("in-toto statement subjects do not match candidate package artifacts")
+
+    predicate = statement.get("predicate")
+    if not isinstance(predicate, dict):
+        raise ValueError("in-toto statement predicate must be an object")
+    build_definition = predicate.get("buildDefinition")
+    if not isinstance(build_definition, dict):
+        raise ValueError("in-toto buildDefinition is missing")
+    if build_definition.get("buildType") != BUILD_TYPE:
+        raise ValueError("unexpected in-toto build type")
+    external_parameters = build_definition.get("externalParameters")
+    expected_external_parameters = {
+        "project": project,
+        "version": version,
+        "commit_sha": commit,
+        "dependency_lock_sha256": lock_digest,
+    }
+    if external_parameters != expected_external_parameters:
+        raise ValueError("in-toto external parameters do not match candidate identities")
+    resolved_dependencies = build_definition.get("resolvedDependencies")
+    expected_resolved_dependencies = [
+        {
+            "uri": f"git+https://github.com/legendteddy/manager@{commit}",
+            "digest": {"gitCommit": commit},
+        },
+        {
+            "uri": "file:dependencies.lock.json",
+            "digest": {"sha256": lock_digest},
+        },
+    ]
+    if resolved_dependencies != expected_resolved_dependencies:
+        raise ValueError("in-toto resolved dependencies do not match source commit and dependency lock")
+    run_details = predicate.get("runDetails")
+    if not isinstance(run_details, dict):
+        raise ValueError("in-toto runDetails is missing")
+    if run_details.get("builder") != {"id": BUILDER_ID}:
+        raise ValueError("unexpected in-toto builder identity")
+    if run_details.get("metadata") != {"invocationId": commit}:
+        raise ValueError("in-toto invocation identity mismatch")
+    if run_details.get("byproducts") != [
+        {"name": "sbom.cdx.json", "digest": {"sha256": sbom_digest}}
+    ]:
+        raise ValueError("in-toto SBOM byproduct identity mismatch")
 
     if pyproject is not None:
         source_project, source_version = load_source_version(pyproject)
