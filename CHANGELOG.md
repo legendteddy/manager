@@ -6,6 +6,15 @@ The format is intentionally simple while the project remains pre-stable. Release
 
 ## Unreleased
 
+### Security and service identity
+
+- add an explicit API-caller JWT reference mode with strict signature, issuer, audience, lifetime, not-before, token-id, and principal-type validation;
+- require a separate `manager.run` capability after JWT authentication so authentication does not silently become service authorization;
+- reject ambiguous duplicate `Authorization` headers at the service boundary;
+- preserve on-demand mounted credential acquisition so JWT verification-key rotation invalidates old tokens without a service restart;
+- require TLS 1.2 or newer when the reference service terminates TLS directly;
+- retain static bearer authentication as a compatibility mode while documenting that it does not provide per-caller identity.
+
 ### First-release engineering
 
 - add required Python 3.11, 3.12, 3.13, and 3.14 compatibility coverage, including wheel build/install/import on every advertised line;
