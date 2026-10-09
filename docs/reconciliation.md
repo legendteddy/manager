@@ -77,3 +77,8 @@ After reconciliation, verify:
 - claims about completion match the evidence actually checked.
 
 If the environment cannot verify a dependency, mark it unverified instead of manufacturing a PASS.
+
+The Python reference runtime requires a completed receipt for each owner update or consumer
+propagation, plus a final verification receipt, before it reports PASS. It structurally checks
+these caller-supplied records but cannot authenticate that an external write or check occurred;
+production adapters must bind receipts to durable, independently observed evidence.

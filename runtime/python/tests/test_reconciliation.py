@@ -40,6 +40,25 @@ def _context() -> dict:
             "repo:consumer-a": "rule-v2",
             "repo:consumer-b": "rule-v2",
         },
+        "action_receipts": [
+            {
+                "target": "repo:consumer-a",
+                "action_type": "propagate",
+                "status": "completed",
+                "evidence": "Synthetic receipt for repo:consumer-a propagation.",
+            },
+            {
+                "target": "repo:consumer-b",
+                "action_type": "propagate",
+                "status": "completed",
+                "evidence": "Synthetic receipt for repo:consumer-b propagation.",
+            },
+        ],
+        "final_verification_receipt": {
+            "status": "pass",
+            "details": "Synthetic final state verification receipt.",
+            "residual_discrepancies": [],
+        },
         "required_surfaces": {
             "repo:consumer-a": ["docs", "tests"],
             "repo:consumer-b": ["docs", "tests", "adapters", "contracts"],
@@ -55,6 +74,14 @@ class ReconciliationControlPlaneTests(unittest.TestCase):
     def test_authority_is_checked_before_consumer_propagation(self) -> None:
         context = _context()
         context["owner_state"] = "rule-v1"
+        context["action_receipts"].append(
+            {
+                "target": "repo:canonical",
+                "action_type": "update_authority",
+                "status": "completed",
+                "evidence": "Synthetic receipt for authoritative-owner update.",
+            }
+        )
 
         outputs = run(
             {
@@ -73,6 +100,79 @@ class ReconciliationControlPlaneTests(unittest.TestCase):
         ]
         self.assertEqual(propagated, ["repo:consumer-a", "repo:consumer-b"])
         self.assertEqual(outputs["reconciliation"]["verification"]["status"], "pass")
+        self.assertTrue(
+            all(
+                action["evidence"].startswith("Synthetic receipt for ")
+                for action in actions
+                if action["action_type"] == "propagate"
+            )
+        )
+        self.assertIn(
+            "does not authenticate receipt origin",
+            outputs["reconciliation"]["verification"]["details"],
+        )
+
+    def test_converged_states_without_action_receipts_cannot_claim_pass(self) -> None:
+        context = _context()
+        context["owner_state"] = "rule-v1"
+        context.pop("action_receipts")
+
+        outputs = run(
+            {
+                "task": _task("reconcile-no-action-receipts"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        residual = outputs["reconciliation"]["verification"]["residual_discrepancies"]
+        self.assertEqual(outputs["trace"]["status"], "blocked")
+        self.assertEqual(outputs["reconciliation"]["verification"]["status"], "fail")
+        self.assertIn(
+            "Required update_authority receipt for target repo:canonical is missing.",
+            residual,
+        )
+        self.assertIn(
+            "Required propagate receipt for target repo:consumer-a is missing.",
+            residual,
+        )
+        self.assertIn(
+            "Required propagate receipt for target repo:consumer-b is missing.",
+            residual,
+        )
+
+    def test_failed_or_duplicate_action_receipts_cannot_claim_pass(self) -> None:
+        context = _context()
+        context["action_receipts"][0]["status"] = "failed"
+        context["action_receipts"].append(dict(context["action_receipts"][1]))
+
+        outputs = run(
+            {
+                "task": _task("reconcile-invalid-action-receipts"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        residual = outputs["reconciliation"]["verification"]["residual_discrepancies"]
+        self.assertEqual(outputs["trace"]["status"], "blocked")
+        self.assertTrue(
+            any("repo:consumer-a is not completed" in item for item in residual)
+        )
+        self.assertTrue(any("Duplicate action receipt" in item for item in residual))
+
+    def test_matching_states_without_final_verification_receipt_cannot_claim_pass(self) -> None:
+        context = _context()
+        context.pop("final_verification_receipt")
+
+        outputs = run(
+            {
+                "task": _task("reconcile-no-final-receipt"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        residual = outputs["reconciliation"]["verification"]["residual_discrepancies"]
+        self.assertEqual(outputs["reconciliation"]["verification"]["status"], "fail")
+        self.assertTrue(any("Final verification receipt" in item for item in residual))
 
     def test_missing_dependency_cannot_claim_verification_pass(self) -> None:
         context = _context()
