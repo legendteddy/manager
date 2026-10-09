@@ -197,15 +197,12 @@ class MCPHostileBoundaryTests(unittest.TestCase):
         ):
             registered.adapter.execute({"query": "alpha"})
 
-    def test_ssrf_policy_has_safe_defaults_and_explicit_private_escape_hatch(self) -> None:
+    def test_ssrf_defaults_deny_local_networks_and_require_explicit_escape_hatches(self) -> None:
         limits = MCPResourceLimits()
         policy = MCPNetworkPolicy()
-        validate_http_target(
-            "http://127.0.0.1:8080/mcp", policy=policy, limits=limits
-        )
-
         blocked = (
             "file:///etc/passwd",
+            "http://127.0.0.1:8080/mcp",
             "http://169.254.169.254/latest/meta-data/",
             "http://10.0.0.1/mcp",
             "https://100.100.100.200/mcp",
@@ -216,6 +213,14 @@ class MCPHostileBoundaryTests(unittest.TestCase):
                 with self.assertRaises(MCPBoundaryError):
                     validate_http_target(url, policy=policy, limits=limits)
 
+        validate_http_target(
+            "http://127.0.0.1:8080/mcp",
+            policy=MCPNetworkPolicy(
+                allow_loopback=True,
+                allow_plain_http_loopback=True,
+            ),
+            limits=limits,
+        )
         validate_http_target(
             "http://10.0.0.1/mcp",
             policy=MCPNetworkPolicy(
@@ -265,7 +270,7 @@ class MCPHostileBoundaryTests(unittest.TestCase):
         self.assertEqual(
             30.0,
             OfficialMCPClient(
-                "test", "http://127.0.0.1/mcp"
+                "test", "https://example.com/mcp"
             ).operation_timeout_seconds,
         )
 
