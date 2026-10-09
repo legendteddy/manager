@@ -128,7 +128,7 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
         _emit_string(f"<bytes:{len(value)}>", writer)
         return
 
-    if value_type is dict:
+    if isinstance(value, dict):
         identity = id(value)
         if identity in seen:
             _emit_string("<cycle>", writer)
@@ -138,7 +138,7 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
             if not writer.append("{"):
                 return
             first = True
-            for key, item in value.items():
+            for key, item in dict.items(value):
                 if writer.truncated:
                     break
                 if not first and not writer.append(","):
@@ -153,7 +153,7 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
             seen.remove(identity)
         return
 
-    if value_type in {list, tuple}:
+    if isinstance(value, list):
         identity = id(value)
         if identity in seen:
             _emit_string("<cycle>", writer)
@@ -163,7 +163,29 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
             if not writer.append("["):
                 return
             first = True
-            for item in value:
+            for item in list.__iter__(value):
+                if writer.truncated:
+                    break
+                if not first and not writer.append(","):
+                    break
+                first = False
+                _emit(item, writer, seen, depth + 1)
+            writer.append("]")
+        finally:
+            seen.remove(identity)
+        return
+
+    if isinstance(value, tuple):
+        identity = id(value)
+        if identity in seen:
+            _emit_string("<cycle>", writer)
+            return
+        seen.add(identity)
+        try:
+            if not writer.append("["):
+                return
+            first = True
+            for item in tuple.__iter__(value):
                 if writer.truncated:
                     break
                 if not first and not writer.append(","):
