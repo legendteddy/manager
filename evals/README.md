@@ -18,7 +18,7 @@ A passing run demonstrates only that the current deterministic reference control
 
 ### Deterministic checks
 
-Use deterministic checks whenever a property can be established directly, especially for forbidden writes, missing approval, public/private leakage, state ownership, required fields, destructive action, reconciliation target, protected surfaces, and regression of blocking safety behavior.
+Use deterministic checks whenever a property can be established directly, especially for forbidden writes, missing approval, public/private leakage, state ownership, required fields, destructive action, reconciliation target, protected surfaces, authority precedence, repository-governance loading, and regression of blocking safety behavior.
 
 ### Rubric evaluation
 
@@ -39,7 +39,16 @@ The executable deterministic fixture set currently covers:
 5. material rule change escalates;
 6. stale approval is rejected;
 7. private data is excluded from modeled public writes;
-8. bounded handoff cannot widen authority.
+8. bounded handoff cannot widen authority;
+9. required repository governance must be loaded before authority resolution;
+10. stale conversational context cannot override repository governance;
+11. external/retrieved evidence cannot become repository authority;
+12. the newest explicit maintainer instruction wins within the modeled authority order;
+13. authority scoped to another domain is ignored;
+14. stricter repository-local/subsystem constraints remain binding under broader governance;
+15. inferred memory cannot override current authoritative state.
+
+The precedence fixtures use a synthetic `prior_state.precedence_context` supplied by the eval harness. It represents application-owned source classification and context-loading state for deterministic testing only. It does not make repository text, retrieved content, conversation history, or memory authoritative by itself.
 
 The broader strategy additionally calls for future coverage of unnecessary specialist rejection, justified parallelism, evaluator ownership boundaries, unsupported readiness claims, failure recovery, private reference anonymity, evidence-class separation, and bounded evolution.
 
