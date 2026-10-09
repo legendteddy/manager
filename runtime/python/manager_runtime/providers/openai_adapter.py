@@ -167,7 +167,7 @@ def _tool_proposals(raw: Any) -> list[ModelPayload]:
         raw_arguments = _field(item, "arguments", "{}")
         try:
             arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else raw_arguments
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
             raise ProviderMalformedResponseError("openai", detail="malformed function-call arguments") from exc
         if not isinstance(arguments, dict):
             raise ProviderMalformedResponseError(

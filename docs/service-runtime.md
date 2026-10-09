@@ -5,7 +5,7 @@ Manager includes a small vendor-neutral HTTP service implemented with the Python
 ## Endpoints
 
 - `GET /livez` reports process liveness. It remains live while a graceful drain is in progress.
-- `GET /readyz` and `GET /healthz` report whether the service is accepting work and whether critical dependencies are available.
+- `GET /readyz` and `GET /healthz` report whether the service is accepting work and whether critical dependencies are available. Operational saturation is included as a noncritical diagnostic so operators can see pressure without creating a readiness feedback loop.
 - `POST /v1/run` accepts one strict JSON task envelope and invokes Manager's existing deterministic `engine.run()` control plane. This endpoint does **not** execute arbitrary tools, register MCP capabilities, resolve approvals, or bypass durable-action rules.
 
 All other routes fail closed. `PUT`, `PATCH`, and `DELETE` are rejected.
@@ -16,7 +16,7 @@ All other routes fail closed. `PUT`, `PATCH`, and `DELETE` are rejected.
 
 `MANAGER_SERVICE_AUTH_MODE=none` is allowed only for development/testing. Production startup rejects it.
 
-Health endpoints are intentionally unauthenticated so orchestrators can probe them. They expose only bounded health state and dependency names/details, never credentials or request payloads.
+Health endpoints are intentionally unauthenticated so orchestrators can probe them. They expose only bounded health state and dependency names/details, never credentials or request payloads. SQLite readiness uses a short read-only metadata probe rather than the durable store's normal operation timeout, so lock pressure cannot consume a service worker for the store's full lock-wait budget.
 
 For deployments that require user/workload identity and fine-grained capabilities, use the repository's `security.py` identity and authorization primitives at the embedding ingress/proxy boundary in addition to the service bearer credential. Do not treat a reverse proxy header as identity unless the proxy/network trust policy is explicitly configured.
 
@@ -24,8 +24,9 @@ For deployments that require user/workload identity and fine-grained capabilitie
 
 The service rejects:
 
-- missing or invalid `Content-Length`;
+- missing, duplicate, signed, or otherwise noncanonical `Content-Length`;
 - chunked/other transfer encodings on the reference endpoint;
+- duplicate or invalid `Content-Type` framing;
 - non-`application/json` requests;
 - bodies over `MANAGER_SERVICE_MAX_REQUEST_BYTES` (1 MiB by default, maximum 16 MiB);
 - invalid UTF-8;
@@ -34,7 +35,9 @@ The service rejects:
 - unknown top-level/task/classification fields;
 - malformed or unbounded task identifiers, objectives, capabilities, or untrusted evidence.
 
-The service uses a fixed worker pool, bounded admission queue, request socket timeout, and a separate active-run capacity gate. Excess work is rejected instead of growing memory without bound.
+Any rejection that can leave request-body bytes unread closes the HTTP/1.1 connection before another request can be parsed, preventing rejected-body bytes from being reinterpreted as a pipelined request.
+
+The service uses bounded daemon request workers, bounded socket admission, and the shared `OperationalRuntime` for active-run capacity. Excess work is rejected instead of growing memory without bound. Run-level overload events, metrics, and health diagnostics therefore flow through the same sanitized observability boundary used by the rest of Manager. The optional `json_stdout` service sink receives telemetry only after that shared sanitization boundary.
 
 ## TLS
 
@@ -48,7 +51,7 @@ TLS configuration does not replace authentication.
 
 ## Shutdown
 
-`SIGTERM`/`SIGINT` immediately make readiness false, keep liveness true during drain, stop accepting new connections, and shut down the bounded HTTP executor. Container `stop_grace_period` should exceed `MANAGER_DEPLOY_GRACEFUL_SHUTDOWN_SECONDS` and the deployment request ceiling should remain finite.
+`SIGTERM`/`SIGINT` immediately make readiness false, keep liveness true during drain, stop accepting new connections, and wait only up to `MANAGER_DEPLOY_GRACEFUL_SHUTDOWN_SECONDS` for accepted HTTP work to drain. Request workers are daemon threads specifically so an uncooperative handler cannot silently extend the documented process-exit budget through Python executor shutdown behavior. Container `stop_grace_period` should exceed the configured graceful-shutdown budget and the deployment request ceiling should remain finite.
 
 ## Production constraints
 

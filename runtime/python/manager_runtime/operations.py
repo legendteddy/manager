@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Mapping
 
 from .capacity import CapacityLimits, CapacityManager, OverloadedError
-from .observability import Correlation, NullTelemetrySink, SafeTelemetry, TelemetrySink
+from .observability import Correlation, SafeTelemetry, TelemetrySink
 
 
 _EVENT_BY_KIND = {
@@ -56,7 +56,7 @@ class OperationalRuntime:
         telemetry_sink: TelemetrySink | None = None,
     ) -> None:
         self.capacity = CapacityManager(limits)
-        self.telemetry = SafeTelemetry(telemetry_sink or NullTelemetrySink())
+        self.telemetry = SafeTelemetry(telemetry_sink)
 
     @contextmanager
     def operation(
@@ -69,8 +69,8 @@ class OperationalRuntime:
     ) -> Iterator[None]:
         if kind not in _EVENT_BY_KIND:
             raise ValueError(f"unknown operation kind: {kind}")
-        correlation = correlation or Correlation()
-        labels = dict(labels or {})
+        if correlation is None:
+            correlation = Correlation()
         event_prefix = _EVENT_BY_KIND[kind]
         started = time.monotonic()
         try:
@@ -83,7 +83,7 @@ class OperationalRuntime:
                     self.telemetry.event(
                         f"{event_prefix}.failed",
                         correlation=correlation,
-                        attributes={"error_type": type(exc).__name__, **dict(attributes or {})},
+                        attributes={"error_type": type(exc).__name__},
                     )
                     raise
                 else:
@@ -145,7 +145,8 @@ class OperationalRuntime:
             raise ValueError(f"unknown operational outcome: {outcome}")
         self.telemetry.metric(metric, "counter", 1, labels=labels)
         self.telemetry.event(
-            f"outcome.{outcome}", correlation=correlation or Correlation(),
+            f"outcome.{outcome}",
+            correlation=correlation if correlation is not None else Correlation(),
             attributes={"outcome": outcome},
         )
 
@@ -172,10 +173,20 @@ class OperationalRuntime:
             "queue": snapshot["queue_depth"] / limits["queued_runs"],
         }
         snapshot["saturation"] = saturation
-        snapshot["telemetry_sink_failures"] = self.telemetry.sink_failures
+        sink_failures = self.telemetry.sink_failures
+        sink_dropped = self.telemetry.sink_dropped
+        sanitization_failures = self.telemetry.sanitization_failures
+        label_overflows = self.telemetry.label_cardinality_overflows
+        snapshot["telemetry_sink_failures"] = sink_failures
+        snapshot["telemetry_sink_dropped"] = sink_dropped
+        snapshot["telemetry_sink_pending"] = self.telemetry.sink_pending
+        snapshot["telemetry_sink_queue_capacity"] = self.telemetry.sink_queue_capacity
+        snapshot["telemetry_sink_inflight_seconds"] = self.telemetry.sink_inflight_seconds
+        snapshot["telemetry_sanitization_failures"] = sanitization_failures
+        snapshot["telemetry_label_cardinality_overflows"] = label_overflows
         if any(value >= 1.0 for value in saturation.values()):
             snapshot["status"] = "saturated"
-        elif self.telemetry.sink_failures:
+        elif sink_failures or sink_dropped or sanitization_failures or label_overflows:
             snapshot["status"] = "degraded"
         else:
             snapshot["status"] = "ok"
