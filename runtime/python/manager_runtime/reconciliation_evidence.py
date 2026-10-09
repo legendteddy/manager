@@ -7,7 +7,11 @@ def enforce_reconciliation_completion(
     context: Any,
     outputs: dict[str, Any],
 ) -> dict[str, Any]:
-    """Fail closed when a routine reconciliation lacks observed post-action state."""
+    """Reject PASS unless declared writes and final verification have receipts.
+
+    This reference runtime validates caller-supplied receipt structure. It cannot
+    authenticate that a repository write or verification actually occurred.
+    """
     reconciliation = outputs.get("reconciliation")
     if not isinstance(context, dict) or not isinstance(reconciliation, dict):
         return outputs
@@ -17,10 +21,30 @@ def enforce_reconciliation_completion(
         return outputs
 
     owner = reconciliation.get("authoritative_owner")
-    dependencies = reconciliation.get("dependencies") or []
+    dependencies = reconciliation.get("dependencies")
     truth = context.get("confirmed_truth")
+    owner_state = context.get("owner_state")
+    consumer_states = context.get("consumer_states")
     verified = context.get("verified_states")
-    residual = list(verification.get("residual_discrepancies") or [])
+    residual_value = verification.get("residual_discrepancies", [])
+    residual = (
+        [item for item in residual_value if isinstance(item, str)]
+        if isinstance(residual_value, list)
+        else []
+    )
+
+    valid_dependencies = isinstance(dependencies, list) and all(
+        isinstance(target, str) and target for target in dependencies
+    )
+    if not isinstance(owner, str) or not owner:
+        residual.append("Authoritative owner is missing or malformed.")
+        owner = ""
+    if not valid_dependencies:
+        residual.append("Dependency inventory is missing or malformed.")
+        dependencies = []
+    if not isinstance(truth, str) or not truth:
+        residual.append("Confirmed truth is missing or malformed.")
+        truth = ""
 
     valid_verified = isinstance(verified, dict) and all(
         isinstance(target, str)
@@ -33,10 +57,20 @@ def enforce_reconciliation_completion(
         residual.append("Post-action verification state is missing or malformed.")
         verified = {}
 
-    if owner in dependencies:
-        residual.append(f"Authoritative owner {owner} cannot also be a dependent consumer.")
+    if not isinstance(consumer_states, dict) or any(
+        not isinstance(target, str)
+        or not target
+        or not isinstance(state, str)
+        or not state
+        for target, state in consumer_states.items()
+    ):
+        residual.append("Current consumer-state evidence is missing or malformed.")
+        consumer_states = {}
 
     targets = [owner, *(target for target in dependencies if target != owner)]
+    if owner and owner in dependencies:
+        residual.append(f"Authoritative owner {owner} cannot also be a dependent consumer.")
+
     for target in targets:
         if target not in verified:
             residual.append(f"Target {target} has no post-action verification state.")
@@ -45,36 +79,116 @@ def enforce_reconciliation_completion(
                 f"Post-action verification for target {target} did not match confirmed truth."
             )
 
-    for target in sorted(set(verified) - {owner} - set(dependencies)):
+    for target in sorted(set(verified) - set(targets)):
         residual.append(f"Consumer {target} is absent from the dependency map.")
 
+    required_mutations: set[tuple[str, str]] = set()
+    if owner and owner_state != truth:
+        required_mutations.add(("update_authority", owner))
+    for target in dependencies:
+        if target != owner and consumer_states.get(target) != truth:
+            required_mutations.add(("propagate", target))
+
+    receipts_value = context.get("action_receipts")
+    receipts: dict[tuple[str, str], dict[str, Any]] = {}
+    if not isinstance(receipts_value, list):
+        residual.append("Action receipts are missing or malformed.")
+    else:
+        for item in receipts_value:
+            if not isinstance(item, dict):
+                residual.append("Action receipt is malformed.")
+                continue
+            action_type = item.get("action_type")
+            target = item.get("target")
+            if not isinstance(action_type, str) or not isinstance(target, str):
+                residual.append("Action receipt target or action type is malformed.")
+                continue
+            key = (action_type, target)
+            if key not in required_mutations:
+                residual.append(
+                    f"Action receipt for {action_type} on {target} does not match a required mutation."
+                )
+                continue
+            if key in receipts:
+                residual.append(f"Duplicate action receipt for {action_type} on {target}.")
+                continue
+            receipts[key] = item
+
+    for action_type, target in sorted(required_mutations):
+        receipt = receipts.get((action_type, target))
+        if receipt is None:
+            residual.append(f"Required {action_type} receipt for target {target} is missing.")
+        elif receipt.get("status") != "completed":
+            residual.append(f"Required {action_type} receipt for target {target} is not completed.")
+        if receipt is not None and not (
+            isinstance(receipt.get("evidence"), str) and receipt["evidence"].strip()
+        ):
+            residual.append(f"Required {action_type} receipt for target {target} has no evidence.")
+
+    final_receipt = context.get("final_verification_receipt")
+    if (
+        not isinstance(final_receipt, dict)
+        or final_receipt.get("status") != "pass"
+        or not isinstance(final_receipt.get("details"), str)
+        or not final_receipt["details"].strip()
+        or final_receipt.get("residual_discrepancies") != []
+    ):
+        residual.append(
+            "Final verification receipt is missing, malformed, or reports unresolved discrepancies."
+        )
+
+    actions = reconciliation.get("actions", [])
+    if not isinstance(actions, list):
+        actions = []
+        reconciliation["actions"] = actions
+
     if not residual:
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            key = (action.get("action_type"), action.get("target"))
+            receipt = receipts.get(key)
+            if receipt is not None:
+                action["evidence"] = receipt["evidence"]
         verification["details"] = (
-            verification.get("details", "")
-            + " Post-action state matched confirmed truth for the authoritative owner and all dependencies."
+            str(verification.get("details", "")).strip()
+            + " Required action receipts and final verification receipt were structurally validated. "
+            "The reference runtime does not authenticate receipt origin."
         ).strip()
         return outputs
 
-    def status_for(target: str) -> str:
-        if target not in verified:
-            return "blocked"
-        return "completed" if verified[target] == truth else "failed"
-
-    filtered_actions: list[dict[str, Any]] = []
-    owner_action_seen = False
-    for action in reconciliation.get("actions", []):
+    filtered_actions = []
+    for action in actions:
+        if not isinstance(action, dict):
+            filtered_actions.append(action)
+            continue
         target = action.get("target")
-        if target == owner:
-            if owner_action_seen:
-                continue
-            owner_action_seen = True
+        action_type = action.get("action_type")
+        if target == owner and action_type == "propagate":
+            continue
         if target in targets:
-            action["status"] = status_for(target)
+            if target not in verified:
+                action["status"] = "blocked"
+            elif verified[target] != truth:
+                action["status"] = "failed"
+        if action_type in {"update_authority", "propagate"}:
+            receipt = receipts.get((action_type, target))
+            evidence = receipt.get("evidence") if receipt is not None else None
+            if (
+                receipt is None
+                or receipt.get("status") != "completed"
+                or not isinstance(evidence, str)
+                or not evidence.strip()
+            ):
+                action["status"] = "blocked"
         filtered_actions.append(action)
     reconciliation["actions"] = filtered_actions
 
     verification["status"] = "fail"
-    verification["details"] = "Reconciliation completion was rejected because post-action evidence was incomplete or contradictory."
+    verification["details"] = (
+        "Reconciliation completion was rejected because action receipts, final verification, "
+        "or post-action states were incomplete or contradictory."
+    )
     verification["residual_discrepancies"] = list(dict.fromkeys(residual))
 
     trace = outputs.get("trace")
@@ -90,7 +204,8 @@ def enforce_reconciliation_completion(
     if isinstance(result, dict):
         result["status"] = "blocked"
         result["finding"] = (
-            "Routine reconciliation is incomplete; post-action state does not verify all declared targets."
+            "Routine reconciliation is incomplete; action receipts, final verification, "
+            "or post-action states are missing or contradictory."
         )
 
     return outputs

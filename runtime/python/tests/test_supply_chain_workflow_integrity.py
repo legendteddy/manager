@@ -57,6 +57,50 @@ class SupplyChainWorkflowIntegrityTests(unittest.TestCase):
                 any("must enter shell through env" in failure for failure in failures)
             )
 
+    def test_dispatch_input_in_inline_run_step_is_rejected(self):
+        for step in (
+            "      run: echo '${{ inputs.target }}'\n",
+            "      - run: echo \"${{ inputs.target }}\"\n",
+            "      - run: >-\n          echo '${{ inputs.target }}'\n",
+        ):
+            with self.subTest(step=step), tempfile.TemporaryDirectory() as tmp:
+                workflow = Path(tmp) / "unsafe-inline-dispatch.yml"
+                workflow.write_text(
+                    "jobs:\n  test:\n    steps:\n" + step,
+                    encoding="utf-8",
+                )
+                failures: list[str] = []
+                repository_integrity.validate_supply_chain_workflow(workflow, failures)
+                self.assertTrue(
+                    any("must enter shell through env" in failure for failure in failures)
+                )
+
+    def test_dispatch_input_in_yaml_comment_is_not_treated_as_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "commented-dispatch.yml"
+            workflow.write_text(
+                "jobs:\n  test:\n    steps:\n"
+                "      - run: echo safe # ${{ inputs.target }}\n",
+                encoding="utf-8",
+            )
+            failures: list[str] = []
+            repository_integrity.validate_supply_chain_workflow(workflow, failures)
+            self.assertFalse(any("must enter shell through env" in failure for failure in failures))
+
+    def test_dispatch_input_can_flow_through_an_environment_variable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "safe-env-dispatch.yml"
+            workflow.write_text(
+                "jobs:\n  test:\n    steps:\n"
+                "      - run: echo \"$TARGET\"\n"
+                "        env:\n"
+                "          TARGET: ${{ inputs.target }}\n",
+                encoding="utf-8",
+            )
+            failures: list[str] = []
+            repository_integrity.validate_supply_chain_workflow(workflow, failures)
+            self.assertFalse(any("must enter shell through env" in failure for failure in failures))
+
     def test_release_publish_requires_both_exact_revision_ci_workflows(self):
         publish = (ROOT / ".github" / "workflows" / "release-publish.yml").read_text(
             encoding="utf-8"
