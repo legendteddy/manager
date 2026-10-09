@@ -91,6 +91,23 @@ class ReferenceRuntimeTests(unittest.TestCase):
                 "consumer_states": {"repo:docs-consumer": "wording-v1"},
                 "required_surfaces": {"repo:docs-consumer": ["docs"]},
                 "reconciled_surfaces": {"repo:docs-consumer": ["docs"]},
+                "authoritative_update": {
+                    "target": "repo:canonical",
+                    "status": "completed",
+                    "evidence": "Synthetic canonical update receipt.",
+                },
+                "propagation": [
+                    {
+                        "target": "repo:docs-consumer",
+                        "status": "completed",
+                        "evidence": "Synthetic dependent documentation update receipt.",
+                    }
+                ],
+                "verification": {
+                    "status": "pass",
+                    "details": "Synthetic final verification inspected the canonical owner and consumer.",
+                    "residual_discrepancies": [],
+                },
                 "verified_states": {
                     "repo:canonical": "wording-v2",
                     "repo:docs-consumer": "wording-v2",
@@ -101,6 +118,7 @@ class ReferenceRuntimeTests(unittest.TestCase):
         reconciliation = output["reconciliation"]
         self.assertEqual(reconciliation["classification"], "routine")
         self.assertEqual(reconciliation["actions"][0]["action_type"], "update_authority")
+        self.assertEqual(reconciliation["actions"][0]["evidence"], "Synthetic canonical update receipt.")
         self.assertEqual(reconciliation["verification"]["status"], "pass")
 
     def test_specialist_handoff_cannot_modify_state(self) -> None:
