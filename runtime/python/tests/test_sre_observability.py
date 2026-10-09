@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from unittest.mock import patch
 
 from manager_runtime.capacity import CapacityLimits, CheckpointTooLarge, OverloadedError
-from manager_runtime.observability import Correlation, InMemoryTelemetrySink, SafeTelemetry, redact
+from manager_runtime.observability import Correlation, InMemoryTelemetrySink, SafeTelemetry, redact, safe_identifier
 from manager_runtime.operations import ObservedModelAdapter, OperationalRuntime
 
 
@@ -188,6 +188,13 @@ class SREObservabilityTests(unittest.TestCase):
         )
         metric = sink.snapshot()["records"][0][1]
         self.assertRegex(metric.labels["provider"], r"^hash:[0-9a-f]{12}$")
+
+    def test_long_correlation_identifier_is_compacted_deterministically(self):
+        identifier = "request-" + ("x" * 1_000_000)
+        first = safe_identifier(identifier)
+        second = safe_identifier(identifier)
+        self.assertEqual(first, second)
+        self.assertRegex(first or "", r"^hash:[0-9a-f]{20}$")
 
     def test_sink_failure_is_non_authoritative(self):
         failing = FailingSink()
