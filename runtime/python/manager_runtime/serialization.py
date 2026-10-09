@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 TRUNCATION_MARKER = "...[truncated by Manager]"
@@ -187,3 +188,48 @@ def bounded_json_text(value: Any, max_chars: int) -> str:
     writer = _BoundedWriter(max_chars)
     _emit(value, writer, set(), 0)
     return writer.render()
+
+
+def strict_json_snapshot(value: Any, *, label: str = "value") -> Any:
+    """Return a detached strict-JSON snapshot or fail closed."""
+    stack = [value]
+    seen_containers: set[int] = set()
+    while stack:
+        current = stack.pop()
+        current_type = type(current)
+        if current is None or current_type in {bool, str, int}:
+            continue
+        if current_type is float:
+            if not math.isfinite(current):
+                raise ValueError(f"{label} contains a non-finite number")
+            continue
+        if current_type is dict:
+            identity = id(current)
+            if identity in seen_containers:
+                continue
+            seen_containers.add(identity)
+            for key, item in current.items():
+                if type(key) is not str:
+                    raise TypeError(f"{label} object keys must be strings")
+                stack.append(item)
+            continue
+        if current_type is list:
+            identity = id(current)
+            if identity in seen_containers:
+                continue
+            seen_containers.add(identity)
+            stack.extend(current)
+            continue
+        raise TypeError(f"{label} contains a non-JSON value")
+
+    try:
+        encoded = json.dumps(
+            value,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+            check_circular=True,
+        )
+        return json.loads(encoded)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"{label} must be strict JSON") from exc
