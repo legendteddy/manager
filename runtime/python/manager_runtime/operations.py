@@ -172,10 +172,13 @@ class OperationalRuntime:
             "queue": snapshot["queue_depth"] / limits["queued_runs"],
         }
         snapshot["saturation"] = saturation
-        snapshot["telemetry_sink_failures"] = self.telemetry.sink_failures
+        sink_failures = self.telemetry.sink_failures
+        sanitization_failures = self.telemetry.sanitization_failures
+        snapshot["telemetry_sink_failures"] = sink_failures
+        snapshot["telemetry_sanitization_failures"] = sanitization_failures
         if any(value >= 1.0 for value in saturation.values()):
             snapshot["status"] = "saturated"
-        elif self.telemetry.sink_failures:
+        elif sink_failures or sanitization_failures:
             snapshot["status"] = "degraded"
         else:
             snapshot["status"] = "ok"
