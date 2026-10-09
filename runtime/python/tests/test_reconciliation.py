@@ -154,6 +154,48 @@ class ReconciliationControlPlaneTests(unittest.TestCase):
             outputs["reconciliation"]["verification"]["details"],
         )
 
+    def test_dependency_inventory_requires_trace_evidence(self) -> None:
+        context = _context()
+        context.pop("dependency_evidence")
+        context["dependencies"] = []
+        context["inspected_dependencies"] = []
+        context["consumer_states"] = {}
+        context["required_surfaces"] = {}
+        context["reconciled_surfaces"] = {}
+
+        outputs = run(
+            {
+                "task": _task("reconcile-missing-dependency-evidence"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        self.assertEqual(outputs["trace"]["status"], "blocked")
+        self.assertIn("dependencies were traced", outputs["result"]["finding"])
+        self.assertNotIn("reconciliation", outputs)
+
+    def test_inspected_consumer_must_be_declared_in_dependency_map(self) -> None:
+        context = _context()
+        context["dependencies"] = ["repo:consumer-a"]
+        context["inspected_dependencies"] = ["repo:consumer-a", "repo:consumer-c"]
+        context["consumer_states"] = {"repo:consumer-a": "rule-v1"}
+        context["required_surfaces"] = {"repo:consumer-a": ["docs", "tests"]}
+        context["reconciled_surfaces"] = {"repo:consumer-a": ["docs", "tests"]}
+
+        outputs = run(
+            {
+                "task": _task("reconcile-inspected-untracked-consumer"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        residual = outputs["reconciliation"]["verification"]["residual_discrepancies"]
+        self.assertEqual(outputs["reconciliation"]["verification"]["status"], "fail")
+        self.assertIn(
+            "Consumer repo:consumer-c is absent from the dependency map.",
+            residual,
+        )
+
     def test_keyword_only_reconciliation_no_longer_fabricates_pass(self) -> None:
         outputs = run({"task": _task("reconcile-no-evidence")})
 
