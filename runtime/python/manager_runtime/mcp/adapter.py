@@ -9,7 +9,13 @@ from ..tools.base import (
     ToolRuntimeError,
     validate_tool_definition,
 )
-from .base import MCPBoundaryError, MCPClient, normalize_mcp_tool, remote_schema_fingerprint
+from .base import (
+    MCPBoundaryError,
+    MCPClient,
+    normalize_mcp_tool,
+    remote_schema_fingerprint,
+    strict_json_snapshot,
+)
 from .security import MCPResourceLimits, bound_mcp_result, validate_discovered_tool
 
 Verifier = Callable[[dict[str, Any], Any], bool]
@@ -76,6 +82,10 @@ class MCPToolAdapter:
                 f"MCP input schema changed before execution for {self.remote_tool_name!r}; local review is required"
             )
 
+    def _bound_result(self, output: Any) -> Any:
+        bounded = bound_mcp_result(output, self.resource_limits)
+        return strict_json_snapshot(bounded, label="MCP tool result")
+
     def execute(self, arguments: dict[str, Any]) -> Any:
         if self.client.server_id != self.expected_server_id:
             raise MCPBoundaryError("MCP server identity changed before execution")
@@ -86,14 +96,14 @@ class MCPToolAdapter:
                 dict(arguments),
                 expected_schema_fingerprint=self.expected_schema_fingerprint,
             )
-            return bound_mcp_result(output, self.resource_limits)
+            return self._bound_result(output)
         if self.require_schema_bound_call:
             raise MCPBoundaryError(
                 "Consequential MCP execution requires a schema-bound client call"
             )
         self._revalidate_remote_tool()
         output = self.client.call_tool(self.remote_tool_name, dict(arguments))
-        return bound_mcp_result(output, self.resource_limits)
+        return self._bound_result(output)
 
     def verify(self, arguments: dict[str, Any], output: Any) -> bool:
         if self._verifier is None:
