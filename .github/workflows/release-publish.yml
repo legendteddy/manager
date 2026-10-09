@@ -128,26 +128,28 @@ jobs:
             --changelog CHANGELOG.md \
             --expected-changelog-sha256 "${CHANGELOG_SHA256}"
 
-      - name: Require successful repository-integrity CI on exact commit
+      - name: Require successful required CI on exact commit
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
-          required_run_id="$(gh run list \
-            --repo "${GITHUB_REPOSITORY}" \
-            --workflow repository-integrity.yml \
-            --commit "${RELEASE_SHA}" \
-            --event push \
-            --status success \
-            --limit 1 \
-            --json databaseId \
-            --jq '.[0].databaseId // empty')"
-          test -n "${required_run_id}" || {
-            echo "no successful Repository integrity push run exists for ${RELEASE_SHA}" >&2
-            exit 1
-          }
+          for workflow in repository-integrity.yml deployment-reference.yml; do
+            required_run_id="$(gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow "${workflow}" \
+              --commit "${RELEASE_SHA}" \
+              --event push \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // empty')"
+            test -n "${required_run_id}" || {
+              echo "no successful ${workflow} push run exists for ${RELEASE_SHA}" >&2
+              exit 1
+            }
+          done
 
       - name: Record authorization evidence for protected-environment review
         shell: bash
@@ -168,7 +170,7 @@ jobs:
             echo "- candidate manifest SHA-256: \`${CANDIDATE_MANIFEST_SHA256}\`"
             echo "- changelog SHA-256: \`${CHANGELOG_SHA256}\`"
             echo "- destination: \`${RELEASE_DESTINATION}\`"
-            echo '- required CI: successful `Repository integrity` push run on the exact commit'
+            echo '- required CI: successful `Repository integrity` and `Deployment reference` push runs on the exact commit'
             echo '- next boundary: protected `pypi-release` environment approval'
           } >> "${GITHUB_STEP_SUMMARY}"
 
@@ -251,19 +253,21 @@ jobs:
           RELEASE_SHA: ${{ inputs.commit_sha }}
         run: |
           set -euo pipefail
-          required_run_id="$(gh run list \
-            --repo "${GITHUB_REPOSITORY}" \
-            --workflow repository-integrity.yml \
-            --commit "${RELEASE_SHA}" \
-            --event push \
-            --status success \
-            --limit 1 \
-            --json databaseId \
-            --jq '.[0].databaseId // empty')"
-          test -n "${required_run_id}" || {
-            echo "required Repository integrity run is no longer available for ${RELEASE_SHA}" >&2
-            exit 1
-          }
+          for workflow in repository-integrity.yml deployment-reference.yml; do
+            required_run_id="$(gh run list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --workflow "${workflow}" \
+              --commit "${RELEASE_SHA}" \
+              --event push \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // empty')"
+            test -n "${required_run_id}" || {
+              echo "required ${workflow} run is not available for ${RELEASE_SHA}" >&2
+              exit 1
+            }
+          done
 
       - name: Create keyless GitHub build provenance attestation for package artifacts
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
