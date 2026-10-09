@@ -2,7 +2,7 @@
   "schema_version": "1.0",
   "case_id": "precedence-context-cannot-bypass-private-public-boundary",
   "title": "Precedence context cannot bypass private-to-public safety",
-  "category": "privacy",
+  "category": "security",
   "input": {
     "task": {
       "task_id": "task-precedence-gate-003",
