@@ -174,11 +174,13 @@ class OperationalRuntime:
         snapshot["saturation"] = saturation
         sink_failures = self.telemetry.sink_failures
         sanitization_failures = self.telemetry.sanitization_failures
+        label_overflows = self.telemetry.label_cardinality_overflows
         snapshot["telemetry_sink_failures"] = sink_failures
         snapshot["telemetry_sanitization_failures"] = sanitization_failures
+        snapshot["telemetry_label_cardinality_overflows"] = label_overflows
         if any(value >= 1.0 for value in saturation.values()):
             snapshot["status"] = "saturated"
-        elif sink_failures or sanitization_failures:
+        elif sink_failures or sanitization_failures or label_overflows:
             snapshot["status"] = "degraded"
         else:
             snapshot["status"] = "ok"
