@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .engine import run
+from .precedence import run_instruction_precedence
 
 SUBJECTS = {"trace", "result", "approval", "reconciliation"}
 
@@ -82,7 +83,12 @@ def check_assertion(outputs: dict[str, Any], assertion: dict[str, Any]) -> tuple
 
 
 def run_case(case: dict[str, Any]) -> dict[str, Any]:
-    outputs = run(case["input"])
+    case_input = case["input"]
+    task = case_input["task"]
+    prior_state = case_input.get("prior_state") or {}
+    outputs = run_instruction_precedence(task, prior_state)
+    if outputs is None:
+        outputs = run(case_input)
     checks = [check_assertion(outputs, item) for item in case["deterministic_assertions"]]
     return {
         "case_id": case["case_id"],
