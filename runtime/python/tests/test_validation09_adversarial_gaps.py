@@ -128,6 +128,34 @@ class HTTPFramingAdversarialTests(unittest.TestCase):
             msg=f"noncanonical Content-Length was accepted: {response[:160]!r}",
         )
 
+    def test_rejected_request_body_cannot_become_next_persistent_request(self) -> None:
+        """Rejecting before body consumption must not reinterpret body bytes as a new request."""
+        smuggled = (
+            b"GET /livez HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Connection: close\r\n"
+            b"\r\n"
+        )
+        request = (
+            b"POST /v1/run HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Content-Type: text/plain\r\n"
+            + f"Content-Length: {len(smuggled)}\r\n".encode("ascii")
+            + b"\r\n"
+            + smuggled
+        )
+        with RunningService() as service:
+            response = service.raw_request(request)
+        self.assertTrue(
+            response.startswith(b"HTTP/1.1 415 "),
+            msg=f"unsupported media type did not fail first: {response[:160]!r}",
+        )
+        self.assertEqual(
+            response.count(b"HTTP/1.1 "),
+            1,
+            msg=f"rejected body was parsed as another HTTP request: {response[:320]!r}",
+        )
+
 
 class _ExplosiveDict(dict):
     def items(self):  # pragma: no cover - this hook must never execute
