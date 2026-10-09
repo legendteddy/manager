@@ -238,7 +238,7 @@ class ServiceGatewayTests(unittest.TestCase):
     def test_production_requires_backend_factory_and_bearer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cfg = config(directory, environment="production", secrets=directory)
-            with self.assertRaisesRegex(GatewayConfigError, "backend"):
+            with self.assertRaisesRegex(GatewayConfigError, "BACKEND_FACTORY"):
                 load_gateway_settings(
                     cfg,
                     environ={"MANAGER_SERVICE_AUTH_MODE": "bearer"},
