@@ -103,6 +103,15 @@ class SREObservabilityTests(unittest.TestCase):
         self.assertLessEqual(mapping.visits, 65)
         self.assertTrue(result["_truncated_items"])
 
+    def test_redaction_has_global_node_budget_for_wide_nested_input(self):
+        shared: dict[str, object] = {"leaf": "value"}
+        for _ in range(6):
+            shared = {f"key-{index}": shared for index in range(64)}
+        result = redact(shared, max_nodes=64)
+        text = repr(result)
+        self.assertIn("_truncated_items", text)
+        self.assertLess(len(text), 20_000)
+
     def test_hostile_objects_never_run_string_methods(self):
         sink = InMemoryTelemetrySink(8)
         telemetry = SafeTelemetry(sink)
@@ -171,6 +180,25 @@ class SREObservabilityTests(unittest.TestCase):
         self.assertEqual(health["status"], "degraded")
         self.assertEqual(health["telemetry_sink_failures"], 0)
         self.assertEqual(health["telemetry_sanitization_failures"], 1)
+
+    def test_metric_label_cardinality_is_bounded_and_health_visible(self):
+        sink = InMemoryTelemetrySink(256)
+        operations = OperationalRuntime(telemetry_sink=sink)
+        for index in range(100):
+            operations.telemetry.metric(
+                "manager_provider_latency_seconds",
+                "histogram",
+                0.1,
+                labels={"provider": f"provider-{index}"},
+            )
+        metrics = [record for kind, record in sink.snapshot()["records"] if kind == "metric"]
+        provider_values = {metric.labels["provider"] for metric in metrics}
+        self.assertEqual(len(provider_values), 65)
+        self.assertIn("overflow", provider_values)
+        self.assertEqual(operations.telemetry.label_cardinality_overflows, 36)
+        health = operations.health()
+        self.assertEqual(health["status"], "degraded")
+        self.assertEqual(health["telemetry_label_cardinality_overflows"], 36)
 
     def test_telemetry_buffer_is_bounded_under_stress(self):
         sink = InMemoryTelemetrySink(25)
