@@ -88,6 +88,7 @@ def _validate_recovery_resolution_transition(
 
 
 def validate_run_state_transition(previous: RunState, candidate: RunState) -> None:
+    """Validate the provider-neutral run status graph and immutable identity."""
     validate_run_state_shape(previous)
     validate_run_state_shape(candidate)
     if previous["run_id"] != candidate["run_id"]:
@@ -108,4 +109,15 @@ def validate_run_state_transition(previous: RunState, candidate: RunState) -> No
             f"invalid run-state transition: {previous['status']} -> {candidate['status']}"
         )
 
+
+def validate_durable_run_state_transition(
+    previous: RunState, candidate: RunState
+) -> None:
+    """Validate a transition before it becomes authoritative durable state.
+
+    The ordinary transition validator describes the status graph. Durable stores
+    additionally bind exits from ``recovery_required`` to explicit resolution
+    evidence and keep that evidence immutable after it is recorded.
+    """
+    validate_run_state_transition(previous, candidate)
     _validate_recovery_resolution_transition(previous, candidate)
