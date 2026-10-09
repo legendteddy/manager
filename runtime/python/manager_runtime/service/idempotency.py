@@ -32,6 +32,10 @@ def canonical_fingerprint(method: str, path: str, payload: Any) -> str:
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite persisted JSON constant: {value}")
+
+
 class SQLiteIdempotencyStore:
     """Durable network request identity with conservative crash recovery."""
 
@@ -40,10 +44,14 @@ class SQLiteIdempotencyStore:
         self._lock = threading.RLock()
         self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
+    def _connect(self, *, timeout_seconds: float = 5.0) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            self.path,
+            timeout=timeout_seconds,
+            isolation_level=None,
+        )
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute(f"PRAGMA busy_timeout = {max(1, int(timeout_seconds * 1000))}")
         return connection
 
     def _initialize(self) -> None:
@@ -77,13 +85,44 @@ class SQLiteIdempotencyStore:
             )
 
     def ready(self) -> bool | tuple[bool, str]:
+        """Bounded critical probe for schema presence and write availability."""
+        connection: sqlite3.Connection | None = None
         try:
-            with self._connect() as connection:
-                row = connection.execute("SELECT 1").fetchone()
-                if row is None:
-                    return False, "idempotency database unavailable"
+            connection = self._connect(timeout_seconds=0.1)
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                SELECT subject, idempotency_key, method, path, request_fingerprint,
+                       status, response_status, response_json, run_id
+                  FROM manager_api_idempotency
+                 LIMIT 0
+                """
+            )
+            connection.execute(
+                "SELECT run_id, subject FROM manager_api_run_owners LIMIT 0"
+            )
+            # Exercise the write path without changing a row. BEGIN IMMEDIATE
+            # proves the database can acquire a writer reservation, while the
+            # no-match UPDATE forces SQLite to validate the target table/columns.
+            connection.execute(
+                """
+                UPDATE manager_api_idempotency
+                   SET updated_at = updated_at
+                 WHERE subject = ? AND idempotency_key = ?
+                """,
+                ("__manager_health__", "__manager_health__"),
+            )
+            connection.rollback()
         except sqlite3.Error as exc:
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except sqlite3.Error:
+                    pass
             return False, f"idempotency database unavailable ({type(exc).__name__})"
+        finally:
+            if connection is not None:
+                connection.close()
         return True
 
     def recover_orphans(self) -> int:
@@ -146,24 +185,38 @@ class SQLiteIdempotencyStore:
 
             status = row["status"]
             if status == "completed":
-                payload = None
-                if row["response_status"] is None or row["response_json"] is None:
+                raw_status = row["response_status"]
+                raw_payload = row["response_json"]
+                if (
+                    not isinstance(raw_status, int)
+                    or isinstance(raw_status, bool)
+                    or not 100 <= raw_status <= 599
+                    or not isinstance(raw_payload, str)
+                ):
                     connection.rollback()
-                    raise IdempotencyError("persisted completed idempotency response is incomplete")
+                    raise IdempotencyError(
+                        "persisted completed idempotency response is incomplete"
+                    )
                 try:
-                    parsed = json.loads(row["response_json"])
-                except json.JSONDecodeError as exc:
+                    parsed = json.loads(
+                        raw_payload,
+                        parse_constant=_reject_json_constant,
+                    )
+                except (json.JSONDecodeError, ValueError) as exc:
                     connection.rollback()
-                    raise IdempotencyError("persisted idempotency response is corrupted") from exc
+                    raise IdempotencyError(
+                        "persisted idempotency response is corrupted"
+                    ) from exc
                 if not isinstance(parsed, dict):
                     connection.rollback()
-                    raise IdempotencyError("persisted idempotency response is malformed")
-                payload = parsed
+                    raise IdempotencyError(
+                        "persisted idempotency response is malformed"
+                    )
                 connection.rollback()
                 return IdempotencyClaim(
                     "replay",
-                    status_code=int(row["response_status"]),
-                    response=payload,
+                    status_code=raw_status,
+                    response=parsed,
                     run_id=row["run_id"],
                 )
             connection.rollback()
@@ -181,6 +234,12 @@ class SQLiteIdempotencyStore:
         status_code: int,
         response: dict[str, Any],
     ) -> bool:
+        if (
+            not isinstance(status_code, int)
+            or isinstance(status_code, bool)
+            or not 100 <= status_code <= 599
+        ):
+            raise IdempotencyError("response status is invalid")
         encoded = json.dumps(
             response,
             sort_keys=True,
@@ -246,7 +305,9 @@ class SQLiteIdempotencyStore:
                 return
             if row["subject"] != subject:
                 connection.rollback()
-                raise IdempotencyError("run identity is already bound to another service subject")
+                raise IdempotencyError(
+                    "run identity is already bound to another service subject"
+                )
             connection.rollback()
 
     def subject_owns_run(self, *, subject: str, run_id: str) -> bool:
