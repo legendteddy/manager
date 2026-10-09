@@ -14,10 +14,11 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Mapping
 
-from ..capacity import CapacityGate, OverloadedError
+from ..capacity import CapacityLimits, OverloadedError
 from ..deployment import DependencyCheck, GracefulShutdown, HealthRegistry, validate_runtime_paths
 from ..deployment.config import DeploymentConfig, load_deployment_config
 from ..engine import run as run_control_plane
+from ..operations import OperationalRuntime
 from ..security import MountedFileSecretProvider, SecurityBoundaryError
 from ..state import SQLiteRunStore
 from .worker_pool import BoundedDaemonWorkerPool
@@ -237,18 +238,75 @@ class _BearerAuthenticator:
         return hmac.compare_digest(supplied, expected)
 
 
-class _Telemetry:
-    def __init__(self, mode: str) -> None:
-        self.mode = mode
+class _JsonStdoutTelemetrySink:
+    """Service output adapter for telemetry that SafeTelemetry already sanitized."""
+
+    def __init__(self) -> None:
         self._lock = threading.Lock()
 
-    def event(self, name: str, **fields: Any) -> None:
-        if self.mode != "json_stdout":
-            return
-        payload = {"event": name, **fields}
-        line = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    def _write(self, payload: dict[str, Any]) -> None:
+        line = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
         with self._lock:
             print(line, file=sys.stdout, flush=True)
+
+    def emit_event(self, event: Any) -> None:
+        self._write({"event": event.name, **dict(event.attributes)})
+
+    def emit_metric(self, metric: Any) -> None:
+        self._write(
+            {
+                "metric": metric.name,
+                "kind": metric.kind,
+                "value": metric.value,
+                "labels": dict(metric.labels),
+            }
+        )
+
+    def emit_span(self, span: Any) -> None:
+        self._write(
+            {
+                "span": span.name,
+                "duration_seconds": span.duration_seconds,
+                "status": span.status,
+                "labels": dict(span.labels),
+            }
+        )
+
+
+class _Telemetry:
+    """Compatibility adapter that routes service events through SafeTelemetry."""
+
+    def __init__(self, operations: OperationalRuntime) -> None:
+        self.operations = operations
+
+    def event(self, name: str, **fields: Any) -> None:
+        self.operations.telemetry.event(name, attributes=fields)
+
+    def metric(self, name: str, kind: str, value: float, **labels: Any) -> None:
+        self.operations.telemetry.metric(name, kind, value, labels=labels)
+
+
+def _service_operations(config: DeploymentConfig) -> OperationalRuntime:
+    sink = _JsonStdoutTelemetrySink() if config.telemetry_mode == "json_stdout" else None
+    return OperationalRuntime(
+        limits=CapacityLimits(
+            active_runs=config.max_concurrency,
+            queued_runs=config.queue_limit,
+        ),
+        telemetry_sink=sink,
+    )
+
+
+def _operations_dependency(operations: OperationalRuntime) -> tuple[bool, str]:
+    snapshot = operations.health()
+    status = str(snapshot.get("status") or "degraded")
+    return status == "ok", f"status={status}"
 
 
 @dataclass(slots=True)
@@ -257,7 +315,7 @@ class ManagerServiceContext:
     settings: ManagerServiceSettings
     health: HealthRegistry
     authenticator: _BearerAuthenticator
-    run_gate: CapacityGate
+    operations: OperationalRuntime
     telemetry: _Telemetry
 
 
@@ -275,6 +333,7 @@ class _BoundedHTTPServer(HTTPServer):
         worker_count = context.config.max_concurrency + 2
         queue_limit = context.config.queue_limit
         slot_count = worker_count + queue_limit
+        self._slot_count = slot_count
         self.request_queue_size = max(5, min(slot_count, 1024))
         self._slots = threading.BoundedSemaphore(slot_count)
         self._executor = BoundedDaemonWorkerPool(
@@ -287,6 +346,18 @@ class _BoundedHTTPServer(HTTPServer):
 
     def process_request(self, request: socket.socket, client_address: tuple[str, int]) -> None:
         if not self._slots.acquire(blocking=False):
+            self.context.telemetry.metric(
+                "manager_overload_rejections_total",
+                "counter",
+                1,
+                component="http_admission",
+                reason="capacity_exhausted",
+            )
+            self.context.telemetry.event(
+                "overload.rejected",
+                component="http_admission",
+                configured_limit=self._slot_count,
+            )
             try:
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -501,7 +572,11 @@ class _Handler(BaseHTTPRequestHandler):
                 self._reply(status, {"ok": False, "error": "invalid_request"}, request_id=request_id)
                 return
             try:
-                with self.context.run_gate.acquire():
+                task_id = task_input["task"]["task_id"]
+                with self.context.operations.run_scope(
+                    request_id=request_id,
+                    run_id=f"run:{task_id}",
+                ):
                     output = run_control_plane(task_input)
             except OverloadedError:
                 status = 503
@@ -574,6 +649,8 @@ def _sqlite_dependency(path: str) -> bool | tuple[bool, str]:
 def create_service_server(
     config: DeploymentConfig,
     settings: ManagerServiceSettings,
+    *,
+    operations: OperationalRuntime | None = None,
 ) -> tuple[_BoundedHTTPServer, ManagerServiceContext]:
     health = HealthRegistry()
     authenticator = _BearerAuthenticator(config, settings)
@@ -592,13 +669,27 @@ def create_service_server(
             )
         )
 
+    resolved_operations = operations or _service_operations(config)
+    limits = resolved_operations.capacity.limits
+    if limits.active_runs != config.max_concurrency or limits.queued_runs != config.queue_limit:
+        raise ServiceConfigError(
+            "service operational capacity must match deployment max_concurrency and queue_limit"
+        )
+    health.register_dependency(
+        DependencyCheck(
+            "operations",
+            lambda: _operations_dependency(resolved_operations),
+            critical=False,
+        )
+    )
+
     context = ManagerServiceContext(
         config=config,
         settings=settings,
         health=health,
         authenticator=authenticator,
-        run_gate=CapacityGate("active_runs", config.max_concurrency),
-        telemetry=_Telemetry(config.telemetry_mode),
+        operations=resolved_operations,
+        telemetry=_Telemetry(resolved_operations),
     )
     server = _BoundedHTTPServer((config.bind_host, config.bind_port), _Handler, context=context)
     if config.tls_mode == "direct":
