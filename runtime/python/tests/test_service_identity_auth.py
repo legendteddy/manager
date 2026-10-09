@@ -35,6 +35,7 @@ def jwt_token(
     subject: str = "synthetic-api-client",
     expires_at: float | None = None,
     token_id: str = "synthetic-token-1",
+    scope: str = "manager.run",
 ) -> str:
     now = time.time()
     claims = {
@@ -45,7 +46,7 @@ def jwt_token(
         "nbf": now - 5,
         "iat": now - 5,
         "jti": token_id,
-        "scope": "manager.run",
+        "scope": scope,
     }
     header = {"alg": "HS256", "typ": "JWT"}
     a = _b64(json.dumps(header, separators=(",", ":")).encode("utf-8"))
@@ -205,12 +206,25 @@ class ServiceIdentityAuthenticationTests(unittest.TestCase):
                 self.assertIsNotNone(identity)
                 assert identity is not None
                 self.assertTrue(identity["authenticated"])
+                self.assertTrue(identity["authorized"])
                 self.assertEqual("client-42", identity["subject"])
                 self.assertEqual("api_client", identity["principal_type"])
                 self.assertEqual("jwt_hs256", identity["authentication_method"])
                 status, response = service.request(token)
                 self.assertEqual(200, status)
                 self.assertTrue(response["ok"])
+
+    def test_valid_identity_without_run_capability_is_unauthorized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "service-jwt-key").write_bytes(SYNTHETIC_KEY)
+            with RunningService(config(secrets_dir=directory), self.settings()) as service:
+                token = jwt_token(scope="manager.read")
+                self.assertIsNone(
+                    service.context.authenticator.authenticate([f"Bearer {token}"])
+                )
+                status, response = service.request(token)
+                self.assertEqual(401, status)
+                self.assertEqual("unauthorized", response["error"])
 
     def test_wrong_issuer_audience_expiry_and_signature_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
