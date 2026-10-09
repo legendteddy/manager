@@ -4,7 +4,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
-from .base import MCPBoundaryError, normalize_mcp_tool
+from .base import MCPBoundaryError, normalize_mcp_tool, strict_json_snapshot
 from .security import (
     BoundedTextSink,
     MCPNetworkPolicy,
@@ -30,7 +30,7 @@ class OfficialMCPClient:
 
     Manager keeps application-owned policy authoritative while treating remote
     discovery, transport metadata, process stderr, arguments and results as
-    hostile input. Every operation gets a fresh SDK client context and is
+    untrusted input. Every operation gets a fresh SDK client context and is
     bounded by time, concurrency, pagination, item count and byte budgets.
     """
 
@@ -195,18 +195,23 @@ class OfficialMCPClient:
     def _validate_arguments(self, arguments: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(arguments, dict):
             raise MCPBoundaryError("MCP tool arguments must be an object")
-        return bound_json_value(
+        bounded = bound_json_value(
             arguments,
             label="MCP tool arguments",
             max_bytes=self.resource_limits.max_request_bytes,
             max_depth=self.resource_limits.max_request_depth,
             max_items=self.resource_limits.max_request_items,
         )
+        return strict_json_snapshot(bounded, label="MCP tool arguments")
+
+    def _bounded_result(self, value: Any) -> Any:
+        bounded = bound_mcp_result(value, self.resource_limits)
+        return strict_json_snapshot(bounded, label="MCP tool result")
 
     def _normalize_call_result(self, result: Any, name: str) -> Any:
         payload = self._dump(result)
         if not isinstance(payload, dict):
-            return bound_mcp_result(payload, self.resource_limits)
+            return self._bounded_result(payload)
         if bool(payload.get("isError") or payload.get("is_error")):
             raise MCPBoundaryError(f"MCP tool returned an error result: {name}")
         if "structuredContent" in payload:
@@ -215,7 +220,7 @@ class OfficialMCPClient:
             normalized = payload["structured_content"]
         else:
             normalized = payload.get("content", payload)
-        return bound_mcp_result(normalized, self.resource_limits)
+        return self._bounded_result(normalized)
 
     def _checked_cursor(self, value: Any, seen: set[str]) -> str | None:
         if value is None:
