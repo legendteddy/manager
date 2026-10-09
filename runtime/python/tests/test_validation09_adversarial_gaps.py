@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+import sys
 import threading
 import unittest
 from types import SimpleNamespace
@@ -189,7 +190,8 @@ class ToolResultSerializationAdversarialTests(unittest.TestCase):
 class ProviderBoundaryAdversarialTests(unittest.TestCase):
     def test_recursion_hostile_function_arguments_normalize_as_malformed_response(self) -> None:
         """Provider JSON parser limits must remain inside the normalized malformed-response boundary."""
-        deep_arguments = '{"x":' * 1500 + "0" + "}" * 1500
+        depth = max(10_000, sys.getrecursionlimit() * 4)
+        deep_arguments = '{"x":' * depth + "0" + "}" * depth
         raw = SimpleNamespace(
             id="resp:validation09",
             model="gpt-test",
