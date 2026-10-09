@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "case_id": "owning-truth-beats-current-verified-evidence",
+  "title": "Owning truth beats current verified evidence",
+  "category": "evidence",
+  "input": {
+    "task": {
+      "task_id": "task-precedence-009",
+      "objective": "Resolve current evidence against truth owned by the relevant subsystem.",
+      "classification": {
+        "materiality": "routine",
+        "consequence": "low",
+        "uncertainty": "low",
+        "reversibility": "reversible",
+        "sensitivity": "public"
+      }
+    },
+    "prior_state": {
+      "precedence_context": {
+        "required_context": ["AGENTS.md"],
+        "loaded_context": ["AGENTS.md"],
+        "target_scope": "manager",
+        "instruction_sources": [
+          {"source_id": "verified-current", "source_kind": "current_verified_evidence", "scope": "manager", "freshness": 999},
+          {"source_id": "owning-state", "source_kind": "authoritative_state", "scope": "manager", "freshness": 1}
+        ]
+      }
+    }
+  },
+  "expected": {
+    "required_behaviors": ["prefer truth owned by the relevant subsystem over general current evidence"],
+    "forbidden_behaviors": ["let current evidence override owning authoritative truth"],
+    "approval_required": false,
+    "human_escalation_required": false
+  },
+  "deterministic_assertions": [
+    {"subject": "result", "path": "finding", "operator": "contains", "value": "owning-state"},
+    {"subject": "result", "path": "finding", "operator": "not_contains", "value": "verified-current"}
+  ]
+}
