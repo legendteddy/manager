@@ -5,6 +5,9 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from .reconciliation import run_reconciliation
+from .reconciliation_evidence import enforce_reconciliation_completion
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -95,119 +98,6 @@ def _trace(
     return trace
 
 
-def _nonempty_string(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _validated_routine_reconciliation(
-    task: dict[str, Any], evidence: Any
-) -> dict[str, Any] | None:
-    """Build reconciliation output only from explicit, already-verified evidence.
-
-    The deterministic control-plane runtime does not discover repositories or
-    perform mutations. It must therefore never manufacture an authoritative
-    owner, dependent targets, completed propagation, or a verification PASS
-    from task wording alone.
-    """
-    if not isinstance(evidence, dict):
-        return None
-    if evidence.get("governing_decision_confirmed") is not True:
-        return None
-
-    authoritative_owner = evidence.get("authoritative_owner")
-    detected_state = evidence.get("detected_state")
-    dependencies = evidence.get("dependencies")
-    authoritative_update = evidence.get("authoritative_update")
-    propagation = evidence.get("propagation")
-    verification = evidence.get("verification")
-
-    if not _nonempty_string(authoritative_owner) or not _nonempty_string(detected_state):
-        return None
-    if (
-        not isinstance(dependencies, list)
-        or not dependencies
-        or any(not _nonempty_string(item) for item in dependencies)
-        or len(set(dependencies)) != len(dependencies)
-    ):
-        return None
-    if not isinstance(authoritative_update, dict):
-        return None
-    if (
-        authoritative_update.get("target") != authoritative_owner
-        or authoritative_update.get("status") != "completed"
-        or not _nonempty_string(authoritative_update.get("evidence"))
-    ):
-        return None
-    if not isinstance(propagation, list) or len(propagation) != len(dependencies):
-        return None
-
-    propagation_by_target: dict[str, dict[str, Any]] = {}
-    for item in propagation:
-        if not isinstance(item, dict):
-            return None
-        target = item.get("target")
-        if (
-            target not in dependencies
-            or target in propagation_by_target
-            or item.get("status") != "completed"
-            or not _nonempty_string(item.get("evidence"))
-        ):
-            return None
-        propagation_by_target[target] = item
-    if set(propagation_by_target) != set(dependencies):
-        return None
-
-    if not isinstance(verification, dict):
-        return None
-    if verification.get("status") != "pass":
-        return None
-    if not _nonempty_string(verification.get("details")):
-        return None
-    residual = verification.get("residual_discrepancies")
-    if residual != []:
-        return None
-
-    actions = [
-        {
-            "target": authoritative_owner,
-            "action_type": "update_authority",
-            "status": "completed",
-            "evidence": authoritative_update["evidence"],
-        }
-    ]
-    actions.extend(
-        {
-            "target": dependency,
-            "action_type": "propagate",
-            "status": "completed",
-            "evidence": propagation_by_target[dependency]["evidence"],
-        }
-        for dependency in dependencies
-    )
-    actions.append(
-        {
-            "target": authoritative_owner,
-            "action_type": "verify",
-            "status": "completed",
-            "evidence": verification["details"],
-        }
-    )
-
-    return {
-        "reconciliation_id": f"reconciliation:{task['task_id']}",
-        "classification": "routine",
-        "authoritative_owner": authoritative_owner,
-        "detected_state": detected_state,
-        "dependencies": list(dependencies),
-        "actions": actions,
-        "verification": {
-            "status": "pass",
-            "details": verification["details"],
-            "residual_discrepancies": [],
-        },
-    }
-
-
 def run(task_input: dict[str, Any]) -> dict[str, Any]:
     """Run the deterministic reference control plane.
 
@@ -282,66 +172,22 @@ def run(task_input: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    if "propagate" in objective_lower and "confirmed" in objective_lower:
-        reconciliation = _validated_routine_reconciliation(
-            task, prior.get("reconciliation_evidence")
-        )
-        if reconciliation is None:
-            trace = _trace(
-                task,
-                status="blocked",
-                workflow="reconciliation",
-                events=[
-                    {
-                        "event_type": "reconciliation",
-                        "status": "unverified",
-                        "summary": "Routine reconciliation evidence is incomplete or inconsistent; no authority or completion state was inferred.",
-                    }
-                ],
-            )
-            trace["residual_uncertainty"] = [
-                "Authoritative owner, dependent propagation, and consistency verification require explicit evidence."
-            ]
-            return {
-                "trace": trace,
-                "result": _result(
-                    task,
-                    status="blocked",
-                    finding="Routine reconciliation was not claimed complete because explicit authority, propagation, and verification evidence was not supplied.",
-                    owner_decision_required=False,
-                ),
-            }
-
-        reconciliation_id = reconciliation["reconciliation_id"]
-        trace = _trace(
+    reconciliation_context = prior.get("reconciliation_context")
+    reconciliation_intent = reconciliation_context is not None or (
+        "propagate" in objective_lower and "confirmed" in objective_lower
+    )
+    if reconciliation_intent:
+        reconciliation_outputs = run_reconciliation(
             task,
-            status="completed",
-            workflow="reconciliation",
-            reconciliation_ref=reconciliation_id,
-            events=[
-                {
-                    "event_type": "reconciliation",
-                    "status": "completed",
-                    "reference": reconciliation_id,
-                    "summary": "Explicit evidence confirms authority-first reconciliation completed.",
-                },
-                {
-                    "event_type": "verification",
-                    "status": "pass",
-                    "summary": reconciliation["verification"]["details"],
-                },
-            ],
+            reconciliation_context,
+            make_approval=_approval,
+            make_result=_result,
+            make_trace=_trace,
         )
-        return {
-            "trace": trace,
-            "reconciliation": reconciliation,
-            "result": _result(
-                task,
-                status="complete",
-                finding="Routine reconciliation control path completed from explicit verified evidence.",
-                owner_decision_required=False,
-            ),
-        }
+        return enforce_reconciliation_completion(
+            reconciliation_context,
+            reconciliation_outputs,
+        )
 
     if "specialist" in objective_lower:
         trace = _trace(

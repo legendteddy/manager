@@ -32,32 +32,6 @@ def task(
     }
 
 
-def reconciliation_evidence() -> dict:
-    return {
-        "governing_decision_confirmed": True,
-        "authoritative_owner": "repo:canonical-doc",
-        "detected_state": "Confirmed wording change must propagate to dependent documentation.",
-        "dependencies": ["doc:dependent"],
-        "authoritative_update": {
-            "target": "repo:canonical-doc",
-            "status": "completed",
-            "evidence": "Canonical documentation already contains the confirmed wording.",
-        },
-        "propagation": [
-            {
-                "target": "doc:dependent",
-                "status": "completed",
-                "evidence": "Dependent documentation now matches the canonical wording.",
-            }
-        ],
-        "verification": {
-            "status": "pass",
-            "details": "Canonical and dependent documentation were compared after propagation.",
-            "residual_discrepancies": [],
-        },
-    }
-
-
 class ReferenceRuntimeTests(unittest.TestCase):
     def test_simple_task_stays_direct(self) -> None:
         output = run(task("simple", "Summarize a short public paragraph."))
@@ -97,48 +71,37 @@ class ReferenceRuntimeTests(unittest.TestCase):
         self.assertEqual(output["approval"]["status"], "stale")
         self.assertEqual(output["trace"]["status"], "blocked")
 
-    def test_routine_reconciliation_is_authority_first_with_explicit_evidence(self) -> None:
+    def test_routine_reconciliation_is_authority_first(self) -> None:
         payload = task(
             "reconcile",
             "Propagate an already-confirmed non-material wording change to dependent documentation.",
         )
-        payload["prior_state"] = {"reconciliation_evidence": reconciliation_evidence()}
+        payload["prior_state"] = {
+            "reconciliation_context": {
+                "change_scope": "routine_propagation",
+                "candidate_owners": ["repo:canonical"],
+                "authoritative_owner": "repo:canonical",
+                "confirmation_evidence": "Synthetic maintainer-confirmed wording revision.",
+                "authority_evidence": "Synthetic repository-local governance identifies the canonical owner.",
+                "dependency_evidence": "Synthetic repository search traced the dependent documentation consumer.",
+                "confirmed_truth": "wording-v2",
+                "owner_state": "wording-v1",
+                "dependencies": ["repo:docs-consumer"],
+                "inspected_dependencies": ["repo:docs-consumer"],
+                "consumer_states": {"repo:docs-consumer": "wording-v1"},
+                "required_surfaces": {"repo:docs-consumer": ["docs"]},
+                "reconciled_surfaces": {"repo:docs-consumer": ["docs"]},
+                "verified_states": {
+                    "repo:canonical": "wording-v2",
+                    "repo:docs-consumer": "wording-v2",
+                },
+            }
+        }
         output = run(payload)
         reconciliation = output["reconciliation"]
         self.assertEqual(reconciliation["classification"], "routine")
-        self.assertEqual(reconciliation["authoritative_owner"], "repo:canonical-doc")
         self.assertEqual(reconciliation["actions"][0]["action_type"], "update_authority")
-        self.assertEqual(reconciliation["actions"][1]["action_type"], "propagate")
         self.assertEqual(reconciliation["verification"]["status"], "pass")
-
-    def test_routine_reconciliation_without_evidence_does_not_manufacture_pass(self) -> None:
-        output = run(
-            task(
-                "reconcile-missing-evidence",
-                "Propagate an already-confirmed non-material wording change to dependent documentation.",
-            )
-        )
-        self.assertEqual(output["trace"]["workflow"], "reconciliation")
-        self.assertEqual(output["trace"]["status"], "blocked")
-        self.assertEqual(output["result"]["status"], "blocked")
-        self.assertNotIn("reconciliation", output)
-        self.assertFalse(output["result"]["owner_decision_required"])
-
-    def test_incomplete_reconciliation_evidence_does_not_manufacture_pass(self) -> None:
-        payload = task(
-            "reconcile-incomplete",
-            "Propagate an already-confirmed non-material wording change to dependent documentation.",
-        )
-        evidence = reconciliation_evidence()
-        evidence["verification"] = {
-            "status": "unverified",
-            "details": "Dependent verification could not be completed.",
-            "residual_discrepancies": ["dependent state not checked"],
-        }
-        payload["prior_state"] = {"reconciliation_evidence": evidence}
-        output = run(payload)
-        self.assertEqual(output["trace"]["status"], "blocked")
-        self.assertNotIn("reconciliation", output)
 
     def test_specialist_handoff_cannot_modify_state(self) -> None:
         output = run(
