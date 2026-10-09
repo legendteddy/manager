@@ -1,201 +1,208 @@
 # Deployment reference
 
-This document is the vendor-neutral operational reference for running Manager. It is deliberately narrower than a claim of universal production readiness. Organizations still own identity, TLS termination, credentials, network policy, external state backends, incident response, and provider/MCP policy.
+This document is the vendor-neutral operational reference for running Manager. It does not declare the repository universally production-ready. Organizations still own identity, TLS/DNS, credentials, network policy, external state backends, provider/MCP policy, incident response, capacity evidence, and operational ownership.
 
 ## Current deployment boundary
 
-The current `main` runtime is a Python reference control plane with a local SQLite durability adapter. It is not yet a horizontally scalable production service. This deployment work therefore provides the reusable operational boundary now and leaves the network-facing service API to the service-runtime owner.
+The Python package now includes a canonical network service command:
 
-The deployment helpers provide:
+```text
+manager-service
+```
+
+That command starts the durable production gateway described in [`service-runtime.md`](service-runtime.md). The smaller `manager_runtime.service.server` surface remains a reference/control-plane compatibility server and is not the canonical production entrypoint.
+
+The deployment layer provides:
 
 - strict development/testing/staging/production configuration;
 - fail-fast validation of unknown `MANAGER_DEPLOY_*` settings;
-- an explicit single-instance SQLite rule;
-- liveness/readiness state primitives for the service layer;
-- SIGTERM/SIGINT drain coordination primitives;
+- a production HTTP gateway with separate `MANAGER_SERVICE_*` validation;
+- liveness/readiness and graceful-drain primitives;
+- bounded concurrency, request ceilings, and timeout budgets;
+- single-instance coordinated SQLite durability and a separate network-idempotency ledger;
 - SQLite online backup, manifest verification, and restore verification;
 - a non-root, read-only-root-compatible container build path;
-- a deployment CLI for configuration and backup/restore operations.
+- deployment CLI operations for configuration and backup/restore.
 
-They do **not** store secrets or define provider credentials, MCP credentials, application authentication, domain names, certificate issuers, or cloud-vendor resources.
+It does not embed provider or MCP credentials, organization RBAC rules, domain names, certificate issuers, cloud-vendor resources, or a horizontally scalable state backend.
+
+## Production service construction
+
+In staging and production, `manager-service` fails before accepting work unless bearer authentication is enabled and readable and `MANAGER_SERVICE_BACKEND_FACTORY=module.path:callable` is configured.
+
+The backend factory receives `(DeploymentConfig, GatewaySettings)` and is responsible for constructing application-owned trusted runtime objects such as:
+
+- the approved model adapter and model identity;
+- the trusted `ToolRegistry` and allowed tool set;
+- the coordinated durable `RunStore`;
+- reviewed MCP bindings and connection configuration;
+- server-side authorization resolution.
+
+Clients cannot send these trust decisions through the HTTP API. The reference `DurableRuntimeBackend` can wrap trusted objects once an embedding application has created them.
+
+The service intentionally does not expose raw MCP server methods and does not expose SSE/streaming. Those remain separate protocol/security decisions.
 
 ## Configuration profiles
 
-`manager-deployment validate-config` loads an optional JSON file followed by `MANAGER_DEPLOY_*` environment overrides. Unknown deployment-prefixed settings fail closed.
+`manager-deployment validate-config` loads an optional JSON file followed by `MANAGER_DEPLOY_*` environment overrides. Unknown deployment-prefixed settings fail closed. `manager-service` applies the same rule to `MANAGER_SERVICE_*` settings.
 
-Development defaults are intentionally local and ephemeral. Staging and production must explicitly provide the operationally important settings, so changing only `MANAGER_DEPLOY_ENV=production` can never silently reuse a development configuration.
+Development/testing may use ephemeral settings. Staging and production must explicitly provide operationally significant configuration so changing only the environment name cannot silently inherit unsafe development defaults.
 
 Production reference settings require:
 
-- durable SQLite state;
-- one instance only;
+- durable SQLite state for the single-instance reference deployment;
+- one service instance only while SQLite owns coordinated state;
 - bounded concurrency and queue sizes;
 - explicit request/provider/MCP/shutdown timeouts;
 - direct TLS or externally terminated TLS;
 - operational telemetry enabled;
 - an explicit read-only-root contract;
-- absolute data, temporary, and SQLite paths.
+- absolute data, temporary, state, and API-idempotency paths;
+- bearer service authentication;
+- an application-owned service backend factory.
 
-`memory` state is rejected in staging and production. SQLite with `instance_count > 1` is rejected because the current reference store does not provide distributed coordination.
+Memory state and unauthenticated service mode are rejected in staging/production.
 
-### Secret injection
+## Secret injection
 
-Secrets remain outside deployment configuration. Mount or inject them using the surrounding platform's secret mechanism and point the provider/MCP/service adapter at those external references. Generic examples include:
+Secrets remain outside canonical deployment configuration. Mount or inject them using the surrounding platform's secret mechanism. Generic examples include read-only files under `/run/secrets`, environment values injected by a trusted secret manager, or workload identity mechanisms that exchange short-lived credentials.
 
-- read-only files under `/run/secrets`;
-- environment variables injected at process start by a trusted secret manager;
-- workload-identity mechanisms that exchange short-lived credentials without storing them in the image.
+Do not commit secret values, copy them into images/manifests, or emit them through configuration/status output. The reference service bearer token is read from the deployment `secrets_dir` and can be rotated without changing the stable service principal identity.
 
-Do not commit secret values, copy them into the image, place them in Compose manifests, or emit them through `print-effective-config`.
+Provider/MCP credential and OAuth policy belongs to the backend factory/application integration, not to public HTTP request bodies.
 
-## Container build
+## Container and TLS assumptions
 
-`deploy/Dockerfile` uses a build stage and a minimal runtime stage. The runtime stage:
+`deploy/Dockerfile` uses a build stage and a minimal non-root runtime stage. The application artifact should be immutable and persistent state should remain outside the image. A production release should also bind its base image to an organization-approved immutable digest rather than treating a mutable tag as reproducibility evidence.
 
-- contains no compiler or build toolchain added by Manager;
-- installs only the built Manager wheel, with `--no-deps`;
-- runs as UID/GID 10001;
-- has explicit writable data/runtime directories;
-- is compatible with a read-only root filesystem when those directories are mounted;
-- contains no credentials.
+Supported TLS modes are:
 
-The example base image tag is convenient for development. A production release should bind `PYTHON_IMAGE` to an organization-approved immutable image digest and record that digest with the deployment evidence. The repository does not claim byte-reproducible container images from a mutable tag.
+- `external`: recommended generic profile behind an organization-owned TLS ingress/reverse proxy;
+- `direct`: Manager wraps the listening socket with the configured certificate/key;
+- `off`: development/testing only.
 
-The current image defaults to `manager-deployment validate-config`. Once the canonical network service command is merged, bind that command in the deployment manifest and use `manager-deployment probe` against its liveness/readiness endpoints. Do not pretend the config-validation command is a running service healthcheck.
+TLS does not replace authentication or workload identity.
 
 ## Health integration
 
-A hosting service should create one `HealthRegistry` and expose two distinct endpoints:
+The production service exposes:
 
-- **liveness**: process can continue running;
-- **readiness**: process can safely accept new work.
+- `GET /livez`: process liveness;
+- `GET /readyz`: whether Manager can safely accept new work;
+- `GET /healthz`: readiness alias.
 
-Readiness must remain false during startup, become true only after required state/config/dependencies are usable, and become false immediately when graceful drain starts. Critical dependency failures must make readiness false. Noncritical telemetry failures may be reported without forcing unready if policy permits.
+Readiness stays false during startup, becomes true only after required service dependencies are usable, and becomes false immediately when graceful drain begins. Critical authentication, backend, durable-state, or API-idempotency failures must prevent safe acceptance.
 
-Do not make provider or MCP availability a universal liveness requirement. Their failure should normally prevent only work that requires them. A deployment may make a dependency readiness-critical when safe execution genuinely depends on it.
+Capacity pressure is surfaced diagnostically without declaring the process dead. Provider/MCP reachability is not automatically a universal liveness dependency; a deployment-specific backend can make it readiness-critical when necessary for safe work.
+
+## Request, timeout, and overload budgets
+
+Keep every network and dependency boundary finite. The deployment request timeout is the amount of time an HTTP caller waits for a newly accepted mutation, not a cancellation lease on the underlying work.
+
+Once a mutation has a durable service idempotency claim, a request timeout or client disconnect does not automatically cancel it. The client may receive `202 in_progress` and poll the durable run. The operation remains bounded by Manager's provider, MCP, tool, state, and service shutdown semantics.
+
+Provider and MCP timeout settings must be applied when the backend factory constructs those adapters. Overload must reject/defer work rather than permit unbounded memory, thread, connection, provider-quota, or database growth.
 
 ## Graceful shutdown
 
-On SIGTERM/SIGINT:
+On `SIGTERM`/`SIGINT`:
 
-1. stop accepting new work and make readiness false;
-2. allow in-flight non-consequential work to finish within the configured drain budget;
-3. preserve the runtime's existing durable `executing`/`recovery_required` semantics for consequential work;
-4. do not auto-retry uncertain external side effects merely because the process is shutting down;
-5. exit before the orchestrator's hard-kill deadline.
+1. readiness becomes false immediately;
+2. new work stops being accepted;
+3. already accepted HTTP/service work drains only within `graceful_shutdown_seconds`;
+4. safe-point cancellation rules remain unchanged;
+5. unfinished network mutations become `ambiguous` in the API-idempotency ledger rather than being auto-retried;
+6. durable `executing`/`recovery_required` semantics continue to govern potentially consequential external effects.
 
-Set the platform termination grace period slightly above `graceful_shutdown_seconds`. SIGKILL cannot be handled. Recovery after a hard kill relies on durable-state reconciliation, not signal hooks.
+Set the platform termination grace period above Manager's configured graceful-shutdown budget. `SIGKILL` cannot be handled; recovery after a hard kill relies on durable evidence and reconciliation, not signal hooks.
 
-## SQLite state
+## SQLite state and network idempotency
 
-The local reference deployment uses a persistent SQLite database outside the image. This is appropriate for a single service instance where host/storage availability matches the deployment's requirements.
+The reference deployment is single-instance and uses SQLite for durable run state. This is appropriate only when one service instance and the underlying storage availability satisfy deployment requirements.
 
-SQLite is unsuitable for the reference deployment when you require multiple active Manager instances, cross-host distributed coordination, storage-level high availability, or database capabilities that the current adapter does not provide. Do not place the same SQLite file on a shared network filesystem and call that distributed safety.
+Do not use the reference SQLite profile for multiple active instances, cross-host coordination, storage-level high availability, or a shared network filesystem presented as distributed safety.
 
-### Backup
+The service network-idempotency ledger is a separate logical ledger and may share the same SQLite database file. It records request identities before backend work, suppresses duplicate network submissions, replays completed safe responses, and converts orphaned `in_progress` records to `ambiguous` on startup.
 
-With the service running or stopped, use the SQLite backup API through:
+This ledger does not make provider calls or arbitrary external side effects exactly once.
+
+A horizontally scaled deployment requires a distributed implementation that preserves, transactionally where required:
+
+- revision CAS;
+- leases and fencing;
+- execution guards;
+- durable operation idempotency;
+- atomic recovery resolution;
+- equivalent service request idempotency/ownership isolation.
+
+## Backup and restore
+
+With the reference SQLite deployment, use the deployment backup API instead of copying a live database file ad hoc:
 
 ```text
 manager-deployment backup /var/lib/manager/state/manager.sqlite3 /backup/manager-YYYYMMDD.sqlite3
 manager-deployment verify-backup /backup/manager-YYYYMMDD.sqlite3
 ```
 
-The backup command writes a sibling manifest containing SHA-256, byte size, SQLite `user_version`, table list, and a schema fingerprint. The manifest provides corruption/change detection but is not a cryptographic authenticity signature.
+The manifest records SHA-256, size, SQLite user version, table list, and schema fingerprint. It detects corruption/change but is not a cryptographic authenticity signature.
 
-Copy both database and manifest to durable backup storage. Backup retention and encryption are organization-specific.
-
-### Restore drill
-
-A backup is not accepted as operational evidence until it has been restored and verified.
-
-1. stop all writers;
-2. verify the selected backup;
-3. restore into a new path first;
-4. start a disposable process against the restored database and run state-level smoke tests;
-5. only then replace a production database, using an explicit maintenance window and rollback plan.
-
-Example:
-
-```text
-manager-deployment restore /backup/manager-YYYYMMDD.sqlite3 /restore-test/manager.sqlite3
-```
-
-Replacing an existing destination is refused unless `--replace` is explicit. Corrupt database files, checksum mismatches, malformed manifests, and schema mismatches fail closed.
+Restore drills should stop writers, verify the selected backup, restore into a separate path, start a disposable process against the restored database, exercise state/service smoke tests, and only then consider replacing production state. Backup retention, encryption, remote copies, and RPO/RTO remain organization-specific.
 
 ## Upgrades
 
-Use immutable application artifacts and persistent state kept outside the application image.
-
 Recommended order:
 
-1. build/verify the exact release candidate;
-2. read its migration/checkpoint notes;
-3. take and verify a state backup;
-4. stop new work and drain the old version;
-5. run any reviewed one-way migration step exactly once;
-6. start the new version with readiness false;
-7. validate configuration, state schema/checkpoint compatibility, and critical dependencies;
-8. enable readiness only after smoke tests pass;
-9. preserve the old artifact until rollback eligibility is known.
+1. verify the exact release candidate and migration notes;
+2. take and verify a backup;
+3. withdraw readiness and drain the old process;
+4. run any reviewed one-way migration exactly once;
+5. start the new version with readiness false;
+6. verify durable state/checkpoint compatibility, service idempotency state, configuration, and critical dependencies;
+7. run smoke tests before readiness is enabled;
+8. preserve the previous artifact until rollback eligibility is understood.
 
-The current SQLite store auto-creates its existing table but does not provide a general schema migration framework. Unknown future checkpoint versions already fail closed. A future deployment migration must therefore be explicit and tested rather than inferred from application startup.
-
-### Mixed-version operation
-
-Do not assume mixed-version compatibility. The local SQLite reference deployment is single-instance, so rolling upgrades are not supported as a safety claim. For a future multi-instance backend, mixed-version compatibility must be established per release before rolling upgrades are allowed.
+Mixed-version safety is not assumed. The single-instance SQLite deployment does not claim rolling-upgrade compatibility.
 
 ## Rollback
 
-Application rollback is safe only when the old version can read the current persisted state and no irreversible migration or external semantic change has occurred.
+Application rollback is safe only when the old binary can read current persisted state and no one-way schema/checkpoint/API-idempotency migration or external semantic change has occurred.
 
-If a release includes a one-way state migration, checkpoint format change, tool semantic change, or external side effect that the old version cannot understand, rollback may require restoring the pre-upgrade backup instead of simply launching the old binary. That is a data recovery operation and may discard post-upgrade local state, so the operator must reconcile consequential external effects first.
+If the old version cannot understand new state, rollback may require restoring a verified pre-upgrade backup. That can discard post-upgrade local state, so consequential external outcomes must be reconciled before restore. Never advertise one-click rollback without release-specific evidence.
 
-Never advertise one-click rollback without release-specific evidence.
+## Capacity guidance
 
-## Resource guidance
+The repository's example ceilings are starting points, not universal production sizing. Measure actual workload and tune from evidence. Keep process/file-descriptor/thread/connection/run queues bounded and ensure upstream ingress has compatible request/header/body/time limits.
 
-The example Compose file uses conservative starting ceilings, not universal sizing guarantees:
+Operational load testing should include saturation, slow clients, dependency latency, state lock pressure, provider/MCP failures, restart during accepted work, and termination during approval/execution/recovery phases.
 
-- CPU: 2 cores;
-- memory: 1 GiB;
-- PIDs: 256;
-- file descriptors: 4096;
-- Manager concurrency: 8;
-- queue: 64.
-
-Measure real workloads and tune from evidence. Keep queueing bounded. Overload should reject or defer work rather than exhaust memory, file descriptors, provider quotas, or state connections.
-
-## Disaster scenarios
+## Disaster behavior
 
 | Scenario | Expected reference behavior |
 | --- | --- |
-| Container killed mid-run | Hard kill cannot drain. Durable `executing` state must not be blindly retried; reconcile uncertain effects. |
-| Host restart | Persistent SQLite volume survives; validate config/state before becoming ready. |
-| Database unavailable | Readiness false for state-dependent service paths; do not accept work that cannot be persisted safely. |
-| Provider unavailable | Fail/decline provider-dependent work without changing Manager authority. |
-| MCP unavailable | Fail affected calls closed; do not reinterpret transport failure as execution success. |
-| Disk full | Writes/backups fail; readiness should be withdrawn if durable work cannot be recorded. |
-| Read-only root | Supported when data/runtime paths are mounted writable and secrets are externally mounted. |
-| Incorrect config | Startup validation exits nonzero before accepting work. |
-| Missing secrets | Owning provider/MCP/service adapter must fail closed before required work is accepted. |
-| Schema/checkpoint mismatch | Fail closed; use reviewed migration/recovery procedure. |
-| Failed migration | Keep old service stopped, restore verified pre-migration backup when safe, and investigate. |
-| Partial rollout | Not supported by the single-instance SQLite reference deployment. |
-| Old/new overlap | Not supported unless a future backend/release explicitly proves mixed-version safety. |
-| Backup restore | Restore to a separate path, integrity-check, then smoke-test before any production replacement. |
+| Container killed mid-run | Do not blindly retry an uncertain effect. Durable execution/recovery state and API orphan classification drive reconciliation. |
+| Client loses response | Retry with the same idempotency key or query the run; the lost connection itself does not cancel work. |
+| Host restart | Persistent state survives; orphaned network `in_progress` requests become ambiguous before safe retry. |
+| Database unavailable | Readiness false for state-dependent service paths; do not accept work that cannot be durably recorded. |
+| Provider unavailable | Fail/decline affected provider work without changing Manager authority or fabricating success. |
+| MCP unavailable | Fail affected calls closed; transport failure is not execution success. |
+| Disk full | State/idempotency writes or backups fail; readiness should be withdrawn when safe durability is unavailable. |
+| Incorrect config | Startup fails before accepting work. |
+| Missing service secret/backend | Staging/production startup fails closed. |
+| Schema/checkpoint mismatch | Fail closed and use a reviewed migration/recovery procedure. |
+| Partial rollout / old-new overlap | Not supported by the single-instance SQLite reference deployment. |
 
-## External production decisions
+## External production decisions and residual risk
 
 The repository intentionally does not choose:
 
-- cloud or container vendor;
-- DNS/domain names;
-- certificate issuer or enterprise TLS policy;
-- production identity/credential mechanism;
-- private network topology, proxy, or egress rules;
+- cloud/container vendor or private topology;
+- DNS names or certificate issuer/enterprise TLS policy;
+- production end-user/workload identity and RBAC mechanism;
+- provider/MCP credentials, OAuth policy, or enterprise egress/proxy controls;
+- telemetry storage, alert routing, SLOs, and on-call ownership;
 - backup retention/encryption provider;
-- incident ownership and on-call policy;
-- a distributed state backend.
+- a distributed state/idempotency backend;
+- raw MCP server exposure;
+- a streaming/SSE event contract.
 
-Those decisions must be made by the deploying organization and bound to its own threat model.
+Those choices must be made by the deploying organization and bound to its own threat model. The repository worker does not deploy production.
