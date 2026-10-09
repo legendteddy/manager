@@ -27,9 +27,16 @@ class MCPClient(Protocol):
 
 
 def _stable_digest(value: Any) -> str:
-    encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
+    try:
+        encoded = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise MCPBoundaryError("MCP schema must be strict JSON") from exc
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
