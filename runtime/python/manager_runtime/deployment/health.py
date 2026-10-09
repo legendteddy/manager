@@ -32,18 +32,26 @@ class HealthRegistry:
         self._dependencies: dict[str, DependencyCheck] = {}
 
     def register_dependency(self, dependency: DependencyCheck) -> None:
-        if not dependency.name or dependency.name.strip() != dependency.name:
+        if type(dependency) is not DependencyCheck:
+            raise TypeError("dependency must be a DependencyCheck")
+        if type(dependency.name) is not str or not dependency.name or dependency.name.strip() != dependency.name:
             raise ValueError("dependency name must be a non-empty normalized string")
+        if not callable(dependency.check):
+            raise TypeError("dependency check must be callable")
+        if type(dependency.critical) is not bool:
+            raise TypeError("dependency critical must be a boolean")
         with self._lock:
             if dependency.name in self._dependencies:
                 raise ValueError(f"dependency already registered: {dependency.name}")
             self._dependencies[dependency.name] = dependency
 
     def set_accepting_work(self, accepting: bool) -> None:
+        if type(accepting) is not bool:
+            raise TypeError("accepting must be a boolean")
         with self._lock:
             if self._draining and accepting:
                 raise RuntimeError("cannot become ready after graceful drain has started")
-            self._accepting_work = bool(accepting)
+            self._accepting_work = accepting
 
     def begin_shutdown(self) -> None:
         with self._lock:
@@ -78,14 +86,14 @@ class HealthRegistry:
         except Exception as exc:
             return False, f"check raised {type(exc).__name__}"
 
-        if isinstance(result, bool):
+        if type(result) is bool:
             return result, "ok" if result else "unavailable"
 
         if type(result) is not tuple or len(result) != 2:
             return False, "invalid dependency check result"
 
         ok, detail = result
-        if not isinstance(ok, bool) or type(detail) is not str:
+        if type(ok) is not bool or type(detail) is not str:
             return False, "invalid dependency check result"
         if not detail or len(detail) > 256 or any(char in detail for char in ("\x00", "\r", "\n")):
             return False, "invalid dependency check detail"
