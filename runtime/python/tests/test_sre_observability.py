@@ -164,6 +164,14 @@ class SREObservabilityTests(unittest.TestCase):
         self.assertEqual(span.labels, {})
         self.assertEqual(telemetry.sanitization_failures, 1)
 
+    def test_sanitization_failure_degrades_operational_health(self):
+        operations = OperationalRuntime(telemetry_sink=InMemoryTelemetrySink(8))
+        operations.telemetry.event("run.started", attributes=BrokenMapping())
+        health = operations.health()
+        self.assertEqual(health["status"], "degraded")
+        self.assertEqual(health["telemetry_sink_failures"], 0)
+        self.assertEqual(health["telemetry_sanitization_failures"], 1)
+
     def test_telemetry_buffer_is_bounded_under_stress(self):
         sink = InMemoryTelemetrySink(25)
         telemetry = SafeTelemetry(sink)
