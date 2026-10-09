@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from .base import RunLeaseConflict, RunState, RunStateError
 from .sqlite_store_v2 import SQLiteRunStore as _SQLiteRunStoreV2
+from .transitions import validate_durable_run_state_transition
 
 SQLITE_STATE_SCHEMA_VERSION = 3
 _SQLITE_RUNTIME_PROTOCOL_FUNCTION = "manager_runtime_schema_version"
@@ -68,6 +69,24 @@ class SQLiteRunStore(_SQLiteRunStoreV2):
             deterministic=True,
         )
         return connection
+
+    def _compare_and_swap_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        expected_revision: int,
+        candidate: RunState,
+    ) -> RunState:
+        """Apply v3 durable recovery invariants inside the write transaction."""
+        row = connection.execute(
+            "SELECT state_json FROM manager_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is not None:
+            previous = self._decoded(row["state_json"])
+            validate_durable_run_state_transition(previous, candidate)
+        return super()._compare_and_swap_in_connection(
+            connection, run_id, expected_revision, candidate
+        )
 
     def compare_and_swap(
         self, run_id: str, expected_revision: int, state: RunState
