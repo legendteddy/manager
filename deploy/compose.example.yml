@@ -1,0 +1,67 @@
+services:
+  manager:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        # Production builds should replace this tag with an approved immutable digest.
+        PYTHON_IMAGE: python:3.14-slim
+    read_only: true
+    user: "10001:10001"
+    environment:
+      MANAGER_DEPLOY_ENV: production
+      MANAGER_DEPLOY_BIND_HOST: 0.0.0.0
+      MANAGER_DEPLOY_BIND_PORT: "8080"
+      MANAGER_DEPLOY_STATE_BACKEND: sqlite
+      MANAGER_DEPLOY_SQLITE_PATH: /var/lib/manager/state/manager.sqlite3
+      MANAGER_DEPLOY_INSTANCE_COUNT: "1"
+      MANAGER_DEPLOY_MAX_CONCURRENCY: "8"
+      MANAGER_DEPLOY_QUEUE_LIMIT: "64"
+      MANAGER_DEPLOY_REQUEST_TIMEOUT_SECONDS: "60"
+      MANAGER_DEPLOY_PROVIDER_TIMEOUT_SECONDS: "45"
+      MANAGER_DEPLOY_MCP_TIMEOUT_SECONDS: "30"
+      MANAGER_DEPLOY_GRACEFUL_SHUTDOWN_SECONDS: "20"
+      MANAGER_DEPLOY_TLS_MODE: external
+      MANAGER_DEPLOY_TELEMETRY_MODE: json_stdout
+      MANAGER_DEPLOY_DATA_DIR: /var/lib/manager/state
+      MANAGER_DEPLOY_TMP_DIR: /var/run/manager
+      MANAGER_DEPLOY_SECRETS_DIR: /run/secrets
+      MANAGER_DEPLOY_READ_ONLY_ROOT: "true"
+      MANAGER_SERVICE_AUTH_MODE: bearer
+      MANAGER_SERVICE_AUTH_SECRET_NAME: service-auth-token
+      MANAGER_SERVICE_MAX_REQUEST_BYTES: "1048576"
+    volumes:
+      - manager-state:/var/lib/manager/state
+    tmpfs:
+      - /var/run/manager:uid=10001,gid=10001,mode=0750,size=64m
+    secrets:
+      - service-auth-token
+    # Loopback-only publication is intentional for the external-TLS reference.
+    # Put an authenticated/TLS reverse proxy or ingress in front of this socket.
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2); assert r.status == 200 and json.load(r)['ok'] is True"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 25s
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2.0
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
+
+volumes:
+  manager-state: {}
+
+secrets:
+  service-auth-token:
+    external: true

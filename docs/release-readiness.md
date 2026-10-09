@@ -1,118 +1,119 @@
-# Release readiness
+# Release and production readiness
 
-Manager separates implementation evidence from release claims. A green test suite is necessary evidence, not a declaration that the project is ready for production use.
+Manager separates repository evidence from deployment claims. Green tests are necessary evidence, not a guarantee that an arbitrary environment is safe.
 
 ## Current classification
 
-**Experimental reference implementation.**
+**Production-capable reference profile.**
 
-The repository has an executable reference control plane, deterministic policy tests, schema conformance, durable-state tests, synthetic MCP transport conformance, supported-Python matrix testing, and release-candidate construction with a reproducible wheel plus checksummed source distribution. It has not published a tagged software release and does not claim production readiness.
+The repository now contains an integrated, deployable single-instance production profile with:
 
-## Maturity labels
+- governed deterministic routing and exact human approval boundaries;
+- provider-neutral model adapters with bounded retry/failover semantics and strict normalized-response validation;
+- structurally separated untrusted model evidence;
+- governed native and MCP tool execution with identity/policy authorization revalidated immediately before side effects;
+- durable run state with optimistic revisions, leases, fencing, an operation ledger, crash recovery, no-blind-replay semantics, and canonical persisted JSON validation;
+- hostile MCP network/stdio/resource isolation and required transport attack tests;
+- bounded telemetry, concurrency admission, queueing, checkpoint size controls, health signals, and operational diagnostics;
+- an authenticated bounded HTTP service with strict request parsing, health/readiness probes, graceful drain, and direct/external TLS support;
+- non-root containerization, read-only-root compatibility, strict environment configuration, SQLite backup/restore verification, and a vendor-neutral operator runbook;
+- supported Python 3.11 through 3.14 testing;
+- candidate-specific hash-locked dependency reconstruction, reproducible wheel and normalized sdist builds, deterministic CycloneDX SBOM, provenance/in-toto evidence, and an independent candidate verifier;
+- fail-closed OIDC/keyless trusted-publishing machinery that remains disabled until external release authority is configured.
 
-### Experimental
+This classification means the repository provides a defensible production reference profile. It does **not** mean every deployment is production-ready. Production readiness remains deployment-specific because identity provider configuration, TLS/DNS, secret management, network topology, datastore topology, backup retention, telemetry retention, SLOs, incident ownership, provider quotas and real-environment load/failure evidence live outside this repository.
 
-Use this label when behavior is implemented and tested but compatibility, operational support, release reproducibility, and deployment assumptions are still evolving.
+The default SQLite profile intentionally remains **single-instance**. Horizontally scaled production deployments require another coordinated `RunStore` implementation that preserves Manager's CAS, lease, fencing, operation-ledger, recovery and migration semantics transactionally. Manager does not claim exactly-once external effects for arbitrary third-party systems.
 
-### Reference-ready
+## Required repository gates
 
-A reference runtime may be described as reference-ready only when all of the following are true for the release candidate:
+A commit is eligible for the production-capable profile only when the exact revision passes all required repository checks, including:
 
-- required repository checks pass on the exact release commit;
-- the distribution package builds from clean source and imports after installation;
-- supported Python versions are explicitly tested;
-- public API and compatibility policy are documented;
-- release notes or changelog entries identify user-visible changes;
-- dependency and build-tool baselines are reproducible enough to investigate regressions;
-- package metadata and license files are complete;
-- security reporting instructions are actionable;
-- release artifacts have an identified provenance path;
-- no documentation claims exceed the available evidence.
+- repository integrity and protected-surface validation;
+- Python 3.11, 3.12, 3.13 and 3.14 compatibility;
+- the full unit and deterministic behavioral-eval suites;
+- public schema and emitted-artifact conformance;
+- clean-source release dependency resolution twice;
+- byte-reproducible wheel and normalized-sdist candidate construction in the verified release environment;
+- independent candidate verification;
+- offline `--require-hashes` dependency reconstruction;
+- normal MCP stdio and Streamable HTTP conformance;
+- hostile MCP boundary, stdio and HTTP attack suites;
+- the deployment/container smoke lane, including non-root identity, read-only-root production configuration, authenticated service startup, readiness, governed API execution and clean termination.
 
-Reference-ready means suitable as a documented reference implementation. It does not mean suitable for a production deployment.
-
-### Production-ready
-
-Production readiness is deployment-specific and cannot be established by this repository alone. It requires evidence for the intended environment, including threat model fit, credentials and identity, network and TLS policy, observability, backup and recovery, operational ownership, dependency governance, incident response, capacity, availability, and external side-effect semantics.
-
-Manager must not use `production-ready` as a repository-wide label without evidence for those conditions.
-
-## Versioning policy
-
-The Python reference runtime currently uses a `0.x.y` version. Until a first stable compatibility commitment is explicitly approved:
-
-- minor `0.x` releases may contain breaking public API changes;
-- patch `0.x.y` releases should be backward-compatible bug fixes, test improvements, documentation corrections, or packaging changes where practical;
-- breaking contract or checkpoint changes require explicit migration notes and versioned schemas or migration code;
-- a version number in `pyproject.toml` is not itself evidence that a public release exists;
-- a version bump does not authorize publishing.
-
-The convenience Python surface exported through `manager_runtime.__all__` is the intended package-facing API, but it remains pre-stable until a tagged release defines a compatibility baseline. Internal modules are not compatibility commitments merely because they are importable.
-
-The current package supports the stable CPython lines explicitly exercised in CI: 3.11, 3.12, 3.13, and 3.14. Package metadata is bounded to `>=3.11,<3.15`; prerelease or future Python lines are not supported merely because they happen to import successfully.
+A branch or pull request that has not passed those gates must not inherit the production-capable classification merely because its parent did.
 
 ## Release authority
 
-Publishing a package, tag, GitHub Release, container, signed artifact, or other externally distributed release is an external commitment. It requires explicit maintainer intent and verification of the exact release target.
+Publishing remains a distinct external commitment. The prepared PyPI path binds authorization to:
 
-A release candidate should bind at least:
-
-- commit SHA;
+- candidate workflow run ID;
+- exact commit SHA;
 - package version;
-- changelog/release notes;
-- required CI result;
-- artifact identity and checksum;
-- build environment or reproducible build instructions;
-- known limitations and security-reporting path.
+- candidate-manifest SHA-256;
+- changelog SHA-256;
+- successful required CI for the exact commit;
+- current `main` head identity;
+- intended destination;
+- protected `pypi-release` environment approval.
 
-If the commit, version, artifact, or material release parameters change, prior release approval is stale.
+Changing any bound value makes prior release approval stale. The publication workflow is disabled until the corresponding GitHub/PyPI external controls are deliberately configured.
 
-## Stage 14 audit
+## Supply-chain status
 
-Status on the Stage 14 baseline:
-
-| Area | Status | Evidence / gap |
+| Area | Status | Boundary |
 | --- | --- | --- |
-| Protected default branch | Pass | Active ruleset requires pull requests and the `public-safety` status check; deletion and non-fast-forward updates are blocked. |
-| CI permissions | Pass | Required repository workflow requests `contents: read` only. |
-| Unit, eval, schema and MCP transport gates | Pass | Required workflow covers deterministic runtime tests, evals, schema conformance, stdio MCP, and Streamable HTTP MCP. |
-| Public/private leakage controls | Pass with limits | Repository integrity checks scan tracked content and commit-email metadata for high-confidence patterns; this is not a complete secret scanner. |
-| Threat model | Pass | `docs/threat-model.md` records trust boundaries, threats, mitigations, and residual risks. |
-| API/compatibility policy | Pass | This document defines the pre-stable Python API and versioning boundary. |
-| Package metadata | Pass | The reference package uses SPDX license metadata, includes its license text and README, and exposes project URLs. |
-| Supported Python matrix | Pass after Stage 14 | Required CI exercises Python 3.11, 3.12, 3.13, and 3.14, including wheel build/install/import on each line. |
-| Dependency compatibility lane | Pass after Stage 14 | The supported-Python matrix continues to exercise the package's declared compatible ranges instead of only one frozen environment. |
-| Known-good direct baseline | Pass with limits after Stage 14 | `runtime/python/constraints/known-good.txt` pins direct build, conformance, model-adapter, and MCP dependencies. It is not a complete hashed transitive lock. |
-| Wheel reproducibility | Pass after Stage 14 | Required CI builds the wheel twice from the same commit under the same verified build inputs and requires matching SHA-256 hashes. |
-| Source distribution identity | Pass with explicit limit after Stage 14 | The sdist is built and checksummed, but the current Setuptools `.tar.gz` path is not claimed byte-reproducible. |
-| Candidate checksums/provenance | Pass after Stage 14 | Candidate construction writes `SHA256SUMS` and an inspectable `provenance.json` bound to commit, version, build epoch, Python, tools, artifact hashes, and verification policy. |
-| Candidate artifact workflow | Pass with limits after Stage 14 | Manual read-only workflow can upload a seven-day GitHub Actions candidate artifact; it cannot tag, publish, attest, or mutate repository contents. |
-| Changelog discipline | Pass | `CHANGELOG.md` records unreleased changes and distinguishes development history from tagged releases. |
-| Private vulnerability reporting | Gap | `SECURITY.md` does not claim that a verified private reporting channel is enabled. |
-| Fully locked dependency reconstruction | Gap | The known-good file pins direct dependencies but does not yet provide a complete hashed transitive lock or offline reconstruction guarantee. |
-| Cryptographic release provenance | Gap | Candidate provenance is an inspectable JSON record, not a cryptographic attestation. No release signing, SBOM, or package-registry trusted-publishing path is yet approved. |
-| Byte-reproducible source distribution | Gap if required | The current sdist is checksum-identified but not byte-reproducible across repeated same-environment builds. This is not currently promoted as a release guarantee. |
-| Tagged releases | Gap | No public GitHub release or package release has been published as of this audit baseline. |
-| Independent security assessment | Gap | The controls have not been independently security-audited. |
-| Production deployment evidence | Gap | No deployment-specific production evidence is claimed. |
+| Python 3.11-3.14 compatibility | IMPLEMENTED | Required matrix. |
+| Build backend identity | IMPLEMENTED | Exact build-backend version in `pyproject.toml`. |
+| Dependency reconstruction | IMPLEMENTED | Candidate-specific wheelhouse and SHA-256-bound lock. |
+| Offline hash verification | REQUIRED CI | `--no-index --require-hashes` reconstruction. |
+| Wheel reproducibility | REQUIRED CI | Two clean-source builds must match byte-for-byte. |
+| Normalized sdist reproducibility | REQUIRED CI | Same-environment repeated builds must match. |
+| SBOM | IMPLEMENTED | Deterministic CycloneDX 1.6 evidence. |
+| Provenance / in-toto statement | IMPLEMENTED | Commit, environment, tools, lock, SBOM and artifact subjects are bound. |
+| Candidate verification | IMPLEMENTED | Exact file set, checksums, identity and fingerprint verification. |
+| Release attack tests | IMPLEMENTED | Tamper, substitution, stale approval, dirty source and reproducibility failures. |
+| Keyless attestation | PREPARED | Requires external GitHub release environment/availability. |
+| Trusted PyPI publishing | PREPARED, DISABLED | Requires external protected environment and PyPI trusted publisher. |
+| Vulnerability visibility | IMPLEMENTED | Scheduled/manual dependency audit. |
+| Private vulnerability reporting | EXTERNAL SETUP | Enable and verify in GitHub repository settings. |
+| Independent security assessment | EXTERNAL EVIDENCE | Recommended before high-consequence deployment. |
 
-## Release-candidate process
+## Deployment-specific production gate
 
-See `docs/release-candidate.md` for the candidate build contract, supported Python lines, dependency lanes, wheel reproducibility gate, source-distribution integrity boundary, checksum/provenance outputs, and the separation between candidate construction and publication.
+Before a specific deployment is called production-ready, its operator should additionally prove:
 
-The manual candidate workflow is preparation only. It does not authorize or perform a public release.
+1. real identity/credential configuration and revocation behavior;
+2. production TLS, DNS, proxy and egress policy;
+3. secret rotation and failure behavior;
+4. datastore topology, capacity, migration and recovery assumptions;
+5. encrypted/off-site backup retention and a restore drill;
+6. telemetry backend, alert routing, retention, SLO and error-budget policy;
+7. measured request/provider/tool/MCP capacity and overload behavior;
+8. incident ownership and rollback procedures;
+9. live-environment failure/chaos evidence appropriate to the deployment's consequence level;
+10. external-system idempotency/reconciliation controls for consequential side effects.
 
-## Remaining first-release gates
+These are deployment responsibilities, not reasons to weaken Manager's repository safeguards.
 
-Before the first public package release:
+## External setup before first PyPI publication
 
-1. enable and verify an actionable private vulnerability-reporting path;
-2. decide whether the first release requires a fully hashed transitive lock or whether the known-good direct baseline is sufficient;
-3. decide whether byte-reproducible source distributions are required for the first release or whether checksum identity is sufficient;
-4. define the approved cryptographic provenance/signing/SBOM policy for released artifacts;
-5. produce a release candidate from the exact intended release commit;
-6. verify its checksums, provenance record, changelog, compatibility evidence, and known limitations;
-7. bind explicit maintainer approval to the exact commit, version, artifact hashes, and publication target;
-8. publish only after that approval.
+1. enable and verify GitHub private vulnerability reporting;
+2. create and protect the `pypi-release` GitHub environment with appropriate independent reviewers;
+3. configure the matching PyPI trusted publisher;
+4. enable `MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED` only after those controls are reviewed;
+5. build and review a fresh candidate from the exact intended `main` commit;
+6. approve the exact candidate fingerprint only after reviewing its changelog, SBOM, provenance, dependency lock and CI evidence.
 
-Do not collapse these gates into a claim that the framework is generally secure or production-ready.
+If `main` moves, the candidate changes, or a bound hash changes, the publication path fails closed and requires a fresh candidate/approval.
+
+## Documentation
+
+See:
+
+- `docs/service-runtime.md` for the production HTTP boundary;
+- `docs/deployment.md` and `docs/operator-runbook.md` for deployment and recovery;
+- `docs/operations.md` for observability, capacity and SRE guidance;
+- `docs/security-identity.md` and `docs/threat-model.md` for identity/security boundaries;
+- `docs/release-candidate.md` and `docs/release-security.md` for release evidence and trusted publishing;
+- `docs/private-vulnerability-reporting.md` for the required GitHub setting.

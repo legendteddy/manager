@@ -1,126 +1,332 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from copy import deepcopy
-from pathlib import Path
 
-from .base import RunState, RunStateConflict, RunStateError
-from .transitions import validate_run_state_shape, validate_run_state_transition
+from .base import RunLeaseConflict, RunState, RunStateError
+from .sqlite_store_v2 import SQLiteRunStore as _SQLiteRunStoreV2
+from .transitions import validate_durable_run_state_transition
+
+SQLITE_STATE_SCHEMA_VERSION = 3
+_SQLITE_RUNTIME_PROTOCOL_FUNCTION = "manager_runtime_schema_version"
+_SQLITE_RUNTIME_GUARD_MESSAGE = "Manager runtime is too old for this coordinated SQLite schema"
+_SQLITE_RUNTIME_GUARD_TRIGGERS = {
+    "manager_runs_runtime_guard_insert": "INSERT",
+    "manager_runs_runtime_guard_update": "UPDATE",
+    "manager_runs_runtime_guard_delete": "DELETE",
+}
+_REQUIRED_COLUMNS = {
+    "manager_runs": {"run_id", "revision", "state_json"},
+    "manager_state_meta": {"key", "value"},
+    "manager_run_leases": {
+        "run_id",
+        "owner_id",
+        "fencing_token",
+        "expires_at_epoch",
+    },
+    "manager_operations": {
+        "operation_id",
+        "run_id",
+        "request_fingerprint",
+        "fencing_token",
+        "status",
+        "result_json",
+        "created_at_epoch",
+        "updated_at_epoch",
+    },
+}
+_REQUIRED_PRIMARY_KEYS = {
+    "manager_runs": {"run_id"},
+    "manager_state_meta": {"key"},
+    "manager_run_leases": {"run_id"},
+    "manager_operations": {"operation_id"},
+}
 
 
-class SQLiteRunStore:
-    """Zero-dependency durable run store using Python's sqlite3 module.
+class SQLiteRunStore(_SQLiteRunStoreV2):
+    """SQLite reference backend with a mixed-runtime write fence.
 
-    The database path is supplied by the embedding application and must remain
-    outside the public repository. This store is a reference durability layer,
-    not a secret store or encryption boundary.
+    Schema v3 preserves the v2 lease/fencing/idempotency implementation and adds
+    database triggers that require every writer of ``manager_runs`` to expose a
+    Manager runtime protocol function. Older Manager runtimes do not register
+    that function, so their writes fail at SQLite rather than silently bypassing
+    leases and fencing on a database already upgraded for coordinated execution.
+
+    Plain revision CAS also refuses to mutate a run while an unexpired lease is
+    active. Code that owns a lease must use ``fenced_compare_and_swap`` so the
+    ownership token is checked in the same transaction as the state mutation.
+
+    This remains a local/shared-file reference backend, not a horizontally
+    scaled production datastore.
     """
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = str(path)
-        self._initialize()
-
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30.0)
-        connection.row_factory = sqlite3.Row
+        connection = super()._connect()
+        connection.create_function(
+            _SQLITE_RUNTIME_PROTOCOL_FUNCTION,
+            0,
+            lambda: SQLITE_STATE_SCHEMA_VERSION,
+            deterministic=True,
+        )
         return connection
 
-    def _initialize(self) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS manager_runs (
-                    run_id TEXT PRIMARY KEY,
-                    revision INTEGER NOT NULL,
-                    state_json TEXT NOT NULL
-                )
-                """
-            )
-
-    @staticmethod
-    def _encoded(state: RunState) -> str:
-        validate_run_state_shape(state)
-        return json.dumps(state, sort_keys=True, separators=(",", ":"))
-
-    @staticmethod
-    def _decoded(payload: str) -> RunState:
-        try:
-            value = json.loads(payload)
-        except json.JSONDecodeError as exc:
-            raise RunStateError("persisted run state is corrupted JSON") from exc
-        if not isinstance(value, dict):
-            raise RunStateError("persisted run state must decode to an object")
-        validate_run_state_shape(value)
-        return value
-
-    def create(self, state: RunState) -> RunState:
-        candidate = deepcopy(state)
-        if candidate.get("revision") != 1:
-            raise RunStateError("new run state must start at revision 1")
-        validate_run_state_shape(candidate)
-        run_id = candidate["run_id"]
-        try:
-            with self._connect() as connection:
-                connection.execute(
-                    "INSERT INTO manager_runs(run_id, revision, state_json) VALUES (?, ?, ?)",
-                    (run_id, 1, self._encoded(candidate)),
-                )
-        except sqlite3.IntegrityError as exc:
-            raise RunStateConflict(f"run already exists: {run_id}") from exc
-        return candidate
-
-    def load(self, run_id: str) -> RunState | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT state_json FROM manager_runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        return self._decoded(row["state_json"])
+    def _compare_and_swap_in_connection(
+        self,
+        connection: sqlite3.Connection,
+        run_id: str,
+        expected_revision: int,
+        candidate: RunState,
+    ) -> RunState:
+        """Apply v3 durable recovery invariants inside the write transaction."""
+        row = connection.execute(
+            "SELECT state_json FROM manager_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is not None:
+            previous = self._decoded(row["state_json"])
+            validate_durable_run_state_transition(previous, candidate)
+        return super()._compare_and_swap_in_connection(
+            connection, run_id, expected_revision, candidate
+        )
 
     def compare_and_swap(
         self, run_id: str, expected_revision: int, state: RunState
     ) -> RunState:
+        """Perform unfenced CAS only when no worker currently owns the run."""
         candidate = deepcopy(state)
         if candidate.get("run_id") != run_id:
             raise RunStateError("replacement run_id must match the stored run")
-
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT revision, state_json FROM manager_runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
-            if row is None:
-                connection.rollback()
-                raise RunStateConflict(f"run does not exist: {run_id}")
-            if row["revision"] != expected_revision:
-                connection.rollback()
-                raise RunStateConflict(
-                    f"run revision changed before update: {run_id}@{expected_revision}"
-                )
-            previous = self._decoded(row["state_json"])
-            validate_run_state_transition(previous, candidate)
-            cursor = connection.execute(
+            lease_row = connection.execute(
                 """
-                UPDATE manager_runs
-                SET revision = ?, state_json = ?
-                WHERE run_id = ? AND revision = ?
+                SELECT fencing_token, expires_at_epoch
+                FROM manager_run_leases WHERE run_id = ?
                 """,
-                (
-                    candidate["revision"],
-                    self._encoded(candidate),
-                    run_id,
-                    expected_revision,
-                ),
-            )
-            if cursor.rowcount != 1:
-                connection.rollback()
-                raise RunStateConflict(
-                    f"run revision changed before update: {run_id}@{expected_revision}"
+                (run_id,),
+            ).fetchone()
+            if (
+                lease_row is not None
+                and lease_row["expires_at_epoch"] > self._db_now(connection)
+            ):
+                raise RunLeaseConflict(
+                    f"unfenced state write rejected while run lease is active: "
+                    f"{run_id}@{lease_row['fencing_token']}"
                 )
+            value = self._compare_and_swap_in_connection(
+                connection, run_id, expected_revision, candidate
+            )
             connection.commit()
+            return value
+        except sqlite3.OperationalError as exc:
+            connection.rollback()
+            raise self._backend_error(exc) from exc
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
-        return candidate
+
+    @staticmethod
+    def _create_runtime_guard_triggers(connection: sqlite3.Connection) -> None:
+        for name, operation in _SQLITE_RUNTIME_GUARD_TRIGGERS.items():
+            connection.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS {name}
+                BEFORE {operation} ON manager_runs
+                BEGIN
+                    SELECT CASE
+                        WHEN {_SQLITE_RUNTIME_PROTOCOL_FUNCTION}() < 3
+                        THEN RAISE(ABORT, '{_SQLITE_RUNTIME_GUARD_MESSAGE}')
+                    END;
+                END
+                """
+            )
+
+    @staticmethod
+    def _schema_version(connection: sqlite3.Connection) -> int:
+        row = connection.execute(
+            "SELECT value FROM manager_state_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is None:
+            raise RunStateError("SQLite state schema version metadata is missing")
+        try:
+            version = int(row["value"])
+        except (TypeError, ValueError) as exc:
+            raise RunStateError(
+                "SQLite state schema version metadata is corrupted"
+            ) from exc
+        if version < 1:
+            raise RunStateError("SQLite state schema version is invalid")
+        if version > SQLITE_STATE_SCHEMA_VERSION:
+            raise RunStateError(
+                f"SQLite state schema version {version} is newer than this runtime"
+            )
+        return version
+
+    @staticmethod
+    def _validate_table_shape(
+        connection: sqlite3.Connection, table: str
+    ) -> None:
+        rows = connection.execute(f"PRAGMA table_info({table})").fetchall()
+        columns = {row["name"] for row in rows}
+        missing = sorted(_REQUIRED_COLUMNS[table] - columns)
+        if missing:
+            raise RunStateError(
+                f"SQLite state table {table} is missing required columns: "
+                + ", ".join(missing)
+            )
+        primary_key = {row["name"] for row in rows if int(row["pk"]) > 0}
+        if primary_key != _REQUIRED_PRIMARY_KEYS[table]:
+            raise RunStateError(
+                f"SQLite state table {table} has an unexpected primary key"
+            )
+
+    @staticmethod
+    def _validate_run_foreign_key(
+        connection: sqlite3.Connection, table: str
+    ) -> None:
+        rows = connection.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+        found = False
+        for row in rows:
+            if (
+                row["table"] == "manager_runs"
+                and row["from"] == "run_id"
+                and row["to"] == "run_id"
+                and str(row["on_delete"]).upper() == "CASCADE"
+            ):
+                found = True
+                break
+        if not found:
+            raise RunStateError(
+                f"SQLite state table {table} is missing its run foreign key"
+            )
+
+    @staticmethod
+    def _expected_runtime_guard_sql(name: str, operation: str) -> str:
+        # sqlite_master stores CREATE TRIGGER without the optional IF NOT EXISTS
+        # clause. Compare the complete normalized definition rather than looking
+        # for a few trusted substrings; otherwise an attacker/corruption can add
+        # a disabling WHEN clause while retaining those substrings.
+        return " ".join(
+            f"""
+            CREATE TRIGGER {name}
+            BEFORE {operation} ON manager_runs
+            BEGIN
+                SELECT CASE
+                    WHEN {_SQLITE_RUNTIME_PROTOCOL_FUNCTION}() < 3
+                    THEN RAISE(ABORT, '{_SQLITE_RUNTIME_GUARD_MESSAGE}')
+                END;
+            END
+            """.upper().split()
+        )
+
+    @staticmethod
+    def _validate_v3_schema(connection: sqlite3.Connection) -> None:
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+        missing_tables = sorted(set(_REQUIRED_COLUMNS) - tables)
+        if missing_tables:
+            raise RunStateError(
+                "SQLite state schema is incomplete: " + ", ".join(missing_tables)
+            )
+        for table in sorted(_REQUIRED_COLUMNS):
+            SQLiteRunStore._validate_table_shape(connection, table)
+        for table in ("manager_run_leases", "manager_operations"):
+            SQLiteRunStore._validate_run_foreign_key(connection, table)
+
+        trigger_rows = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+        triggers = {row["name"]: row["sql"] for row in trigger_rows}
+        for name, operation in _SQLITE_RUNTIME_GUARD_TRIGGERS.items():
+            sql = triggers.get(name)
+            if not isinstance(sql, str):
+                raise RunStateError(
+                    f"SQLite coordinated runtime guard is incomplete: {name}"
+                )
+            normalized = " ".join(sql.upper().split())
+            expected = SQLiteRunStore._expected_runtime_guard_sql(name, operation)
+            if normalized != expected:
+                raise RunStateError(
+                    f"SQLite coordinated runtime guard is malformed: {name}"
+                )
+
+    def _upgrade_v2_to_v3(self) -> None:
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            version = self._schema_version(connection)
+            if version == SQLITE_STATE_SCHEMA_VERSION:
+                self._validate_v3_schema(connection)
+                connection.commit()
+                return
+            if version != 2:
+                raise RunStateError(
+                    f"no reviewed SQLite migration exists from schema version {version}"
+                )
+            self._create_runtime_guard_triggers(connection)
+            connection.execute(
+                "UPDATE manager_state_meta SET value = ? WHERE key = 'schema_version'",
+                (str(SQLITE_STATE_SCHEMA_VERSION),),
+            )
+            self._validate_v3_schema(connection)
+            connection.commit()
+        except sqlite3.OperationalError as exc:
+            connection.rollback()
+            raise self._backend_error(exc) from exc
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def _initialize(self) -> None:
+        """Upgrade historical stores while refusing incomplete/future v3 state."""
+        connection: sqlite3.Connection | None = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            tables = {
+                row["name"]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+
+            if "manager_runs" not in tables or "manager_state_meta" not in tables:
+                connection.rollback()
+                connection.close()
+                connection = None
+                super()._initialize()
+                self._upgrade_v2_to_v3()
+                return
+
+            version = self._schema_version(connection)
+            if version == SQLITE_STATE_SCHEMA_VERSION:
+                self._validate_v3_schema(connection)
+                connection.commit()
+                return
+
+            connection.rollback()
+            connection.close()
+            connection = None
+            # The reviewed v1 -> v2 migration remains implemented by the v2
+            # reference class. Once it reaches v2, this wrapper adds the v3
+            # database-level mixed-runtime write fence.
+            super()._initialize()
+            self._upgrade_v2_to_v3()
+        except sqlite3.OperationalError as exc:
+            if connection is not None:
+                connection.rollback()
+            raise self._backend_error(exc) from exc
+        except Exception:
+            if connection is not None:
+                connection.rollback()
+            raise
+        finally:
+            if connection is not None:
+                connection.close()

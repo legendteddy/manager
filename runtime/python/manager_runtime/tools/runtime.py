@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any
 
+from ..capacity import OverloadedError
+from ..observability import Correlation
+from ..operations import DEFAULT_OPERATIONS, OperationalRuntime
 from ..security import SecurityBoundaryError, evaluate_tool_authorization
+from ..serialization import strict_json_snapshot
 from .base import (
     ToolPayload,
     ToolRegistry,
@@ -27,7 +33,6 @@ def _authorization_flag(authorization: ToolPayload, key: str) -> bool:
 
 
 def _safe_exception_type(exc: BaseException) -> str:
-    """Return bounded diagnostic metadata without exception message contents."""
     return type(exc).__name__
 
 
@@ -88,10 +93,7 @@ def _result(
         "status": status,
         "side_effect_class": side_effect_class,
         "decision_reason": reason,
-        "verification": {
-            "status": verification_status,
-            "details": verification_details,
-        },
+        "verification": {"status": verification_status, "details": verification_details},
         "approval_ref": approval["approval_id"] if approval else None,
         "error": error,
         "redacted": redacted,
@@ -121,7 +123,6 @@ def _approval_state(
             reason=reason,
             security_decision=security_decision,
         )
-
     if supplied.get("status") != "approved":
         return False, _approval_packet(
             request,
@@ -130,16 +131,14 @@ def _approval_state(
             reason=reason,
             security_decision=security_decision,
         )
-
     if supplied.get("action_fingerprint") != expected:
-        stale = _approval_packet(
+        return False, _approval_packet(
             request,
             side_effect_class=side_effect_class,
             status="stale",
             reason="The approved tool action no longer matches the current target or arguments.",
             security_decision=security_decision,
         )
-        return False, stale
 
     extensions = supplied.get("extensions")
     security_extension = extensions.get("security") if isinstance(extensions, dict) else None
@@ -154,21 +153,62 @@ def _approval_state(
         else None
     )
     if approved_binding is not None or current_binding is not None:
-        if (
-            not isinstance(approved_binding, str)
-            or not approved_binding
-            or approved_binding != current_binding
-        ):
-            stale = _approval_packet(
+        if not isinstance(approved_binding, str) or not approved_binding or approved_binding != current_binding:
+            return False, _approval_packet(
                 request,
                 side_effect_class=side_effect_class,
                 status="stale",
                 reason="The approved authorization identity or policy is no longer current.",
                 security_decision=security_decision,
             )
-            return False, stale
-
     return True, supplied
+
+
+def _canonical_security_approval_binding(
+    authorization: ToolPayload,
+    decision: ToolPayload,
+) -> str:
+    """Bind approval to policy semantics, not only a caller-managed revision label."""
+    policy = authorization.get("security_policy")
+    context = authorization.get("security_context")
+    if not isinstance(policy, dict) or not isinstance(context, dict):
+        raise SecurityBoundaryError("security_context_invalid")
+
+    revalidator = context.get("principal_revalidator")
+    revalidator_revision = context.get("principal_revalidator_revision")
+    if revalidator_revision is not None and (
+        not isinstance(revalidator_revision, str) or not revalidator_revision
+    ):
+        raise SecurityBoundaryError("security_principal_revalidator_revision_invalid")
+    if revalidator is None and revalidator_revision is not None:
+        raise SecurityBoundaryError("security_principal_revalidator_revision_orphaned")
+
+    policy_snapshot = {
+        "revision": policy.get("revision"),
+        "clock_skew_seconds": policy.get("clock_skew_seconds", 60),
+        "allowed_principal_types": policy.get("allowed_principal_types"),
+        "max_authorization_age_seconds": policy.get("max_authorization_age_seconds"),
+        "rules": policy.get("rules"),
+    }
+    payload = {
+        "authorization_decision": decision.get("binding"),
+        "policy": policy_snapshot,
+        "principal_revalidation": {
+            "enabled": revalidator is not None,
+            "revision": revalidator_revision,
+        },
+    }
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise SecurityBoundaryError("security_approval_binding_not_canonical") from exc
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _security_decision(
@@ -181,6 +221,9 @@ def _security_decision(
         return None
     if not isinstance(decision, dict) or not isinstance(decision.get("allowed"), bool):
         raise SecurityBoundaryError("security_decision_invalid")
+    if decision["allowed"]:
+        decision = dict(decision)
+        decision["binding"] = _canonical_security_approval_binding(authorization, decision)
     return decision
 
 
@@ -189,13 +232,16 @@ def execute_tool_request(
     request: ToolPayload,
     registry: ToolRegistry,
     authorization: ToolPayload | None = None,
+    *,
+    operations: OperationalRuntime | None = None,
 ) -> ToolPayload:
-    """Evaluate and optionally execute one tool request.
+    """Evaluate and optionally execute one governed tool request.
 
-    Authorization is trusted application context and must never be copied from
-    model output. If a security context/policy envelope is supplied, Manager
-    evaluates it deny-by-default and binds any approval to that exact current
-    authorization. Authentication alone never grants execution authority.
+    Security context and approval are independent. When a strict security
+    envelope is present, Manager evaluates it deny-by-default, binds any human
+    approval to that exact identity/policy decision, and revalidates the
+    decision immediately before the side effect. Operational telemetry and
+    capacity admission remain descriptive only and cannot grant authority.
     """
     validate_tool_request(request)
     if authorization is not None and not isinstance(authorization, dict):
@@ -204,23 +250,15 @@ def execute_tool_request(
             "analysis",
             status="blocked",
             reason="invalid_authorization_context",
-            verification_status="not_required",
             error="authorization context must be an object",
         )
     authorization = dict(authorization or {})
     registered = registry.get(request["tool_name"])
     if registered is None:
-        return _result(
-            request,
-            "analysis",
-            status="blocked",
-            reason="unknown_tool",
-            verification_status="not_required",
-        )
+        return _result(request, "analysis", status="blocked", reason="unknown_tool")
 
     definition = registered.definition
     side_effect_class = definition["side_effect_class"]
-
     try:
         validate_arguments(request["arguments"], definition["input_schema"])
     except (TypeError, ValueError) as exc:
@@ -229,7 +267,6 @@ def execute_tool_request(
             side_effect_class,
             status="blocked",
             reason="invalid_arguments",
-            verification_status="not_required",
             error=str(exc),
         )
 
@@ -241,7 +278,6 @@ def execute_tool_request(
             side_effect_class,
             status="blocked",
             reason="invalid_security_context",
-            verification_status="not_required",
             error=exc.code,
         )
     if security_decision is not None:
@@ -251,19 +287,13 @@ def execute_tool_request(
                 side_effect_class,
                 status="blocked",
                 reason="security_authorization_denied",
-                verification_status="not_required",
                 error=str(security_decision.get("reason") or "denied"),
             )
-        # A current Manager security decision satisfies coarse scope authorization.
-        # The legacy flag cannot bypass the stricter envelope because this branch
-        # already failed closed above when the policy denied the action.
         authorization["scope_authorized"] = True
 
     try:
         scope_authorized = _authorization_flag(authorization, "scope_authorized")
-        human_intent_confirmed = _authorization_flag(
-            authorization, "human_intent_confirmed"
-        )
+        human_intent_confirmed = _authorization_flag(authorization, "human_intent_confirmed")
         target_verified = _authorization_flag(authorization, "target_verified")
     except TypeError as exc:
         return _result(
@@ -271,23 +301,14 @@ def execute_tool_request(
             side_effect_class,
             status="blocked",
             reason="invalid_authorization_context",
-            verification_status="not_required",
             error=str(exc),
         )
 
     task_materiality = task.get("classification", {}).get("materiality", "routine")
-
     if side_effect_class != "analysis" and not scope_authorized:
-        return _result(
-            request,
-            side_effect_class,
-            status="blocked",
-            reason="scope_not_authorized",
-            verification_status="not_required",
-        )
+        return _result(request, side_effect_class, status="blocked", reason="scope_not_authorized")
 
     approval: ToolPayload | None = None
-
     if side_effect_class == "reversible_write" and task_materiality == "material":
         approved, approval = _approval_state(
             request,
@@ -302,7 +323,6 @@ def execute_tool_request(
                 side_effect_class,
                 status="approval_required",
                 reason="material_write_requires_approval",
-                verification_status="not_required",
                 approval=approval,
             )
 
@@ -313,7 +333,6 @@ def execute_tool_request(
                 side_effect_class,
                 status="blocked",
                 reason="external_target_not_verified",
-                verification_status="not_required",
             )
         if not human_intent_confirmed:
             approved, approval = _approval_state(
@@ -329,7 +348,6 @@ def execute_tool_request(
                     side_effect_class,
                     status="approval_required",
                     reason="external_commitment_requires_human_intent",
-                    verification_status="not_required",
                     approval=approval,
                 )
 
@@ -340,7 +358,6 @@ def execute_tool_request(
                 side_effect_class,
                 status="blocked",
                 reason="sensitive_target_not_verified",
-                verification_status="not_required",
             )
         approved, approval = _approval_state(
             request,
@@ -355,13 +372,11 @@ def execute_tool_request(
                 side_effect_class,
                 status="approval_required",
                 reason="sensitive_destructive_requires_approval",
-                verification_status="not_required",
                 approval=approval,
             )
 
-    # Revalidate the security envelope immediately before the side effect. This
-    # closes authorization reuse across token expiry or mutable policy objects
-    # within the same process and keeps approval distinct from authorization.
+    # Authentication and approval are snapshots, not execution authority. Recheck
+    # mutable identity/policy at the last possible point before the adapter call.
     if security_decision is not None:
         try:
             final_security = _security_decision(authorization, request, definition)
@@ -371,7 +386,6 @@ def execute_tool_request(
                 side_effect_class,
                 status="blocked",
                 reason="security_authorization_stale",
-                verification_status="not_required",
                 error=exc.code,
             )
         if (
@@ -384,11 +398,27 @@ def execute_tool_request(
                 side_effect_class,
                 status="blocked",
                 reason="security_authorization_stale",
-                verification_status="not_required",
             )
 
+    runtime = operations or DEFAULT_OPERATIONS
+    correlation = Correlation.from_values(
+        run_id=request["run_id"], tool_request_id=request["request_id"]
+    )
     try:
-        output = registered.adapter.execute(dict(request["arguments"]))
+        with runtime.operation(
+            "tool",
+            correlation=correlation,
+            labels={"operation": "execute", "side_effect_class": side_effect_class},
+            attributes={"side_effect_class": side_effect_class},
+        ):
+            output = registered.adapter.execute(dict(request["arguments"]))
+    except OverloadedError:
+        return _result(
+            request,
+            side_effect_class,
+            status="blocked",
+            reason="overload_rejected",
+        )
     except Exception as exc:
         return _result(
             request,
@@ -399,9 +429,21 @@ def execute_tool_request(
             error=_safe_exception_type(exc),
         )
 
+    try:
+        output = strict_json_snapshot(output, label="tool output")
+    except (TypeError, ValueError) as exc:
+        return _result(
+            request,
+            side_effect_class,
+            status="failed",
+            reason="invalid_tool_output",
+            verification_status="unverified",
+            verification_details="Tool executed but returned output outside the strict JSON contract.",
+            error=_safe_exception_type(exc),
+        )
+
     redacted = bool(definition.get("sensitive_output", False))
     public_output = None if redacted else output
-
     if definition["requires_verification"]:
         verifier = getattr(registered.adapter, "verify", None)
         if not callable(verifier):

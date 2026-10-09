@@ -5,6 +5,9 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from .reconciliation import run_reconciliation
+from .reconciliation_evidence import enforce_reconciliation_completion
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -169,69 +172,22 @@ def run(task_input: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    if "propagate" in objective_lower and "confirmed" in objective_lower:
-        reconciliation_id = f"reconciliation:{task['task_id']}"
-        reconciliation = {
-            "reconciliation_id": reconciliation_id,
-            "classification": "routine",
-            "authoritative_owner": f"authority:{task['task_id']}",
-            "detected_state": "Confirmed non-material change requires propagation.",
-            "dependencies": [f"dependent:{task['task_id']}"],
-            "actions": [
-                {
-                    "target": f"authority:{task['task_id']}",
-                    "action_type": "update_authority",
-                    "status": "completed",
-                    "evidence": "Reference runtime modeled authoritative update first.",
-                },
-                {
-                    "target": f"dependent:{task['task_id']}",
-                    "action_type": "propagate",
-                    "status": "completed",
-                    "evidence": "Dependent propagation followed authoritative update.",
-                },
-                {
-                    "target": f"dependent:{task['task_id']}",
-                    "action_type": "verify",
-                    "status": "completed",
-                    "evidence": "No modeled residual contradiction remained.",
-                },
-            ],
-            "verification": {
-                "status": "pass",
-                "details": "Modeled routine reconciliation completed in authority-first order.",
-                "residual_discrepancies": [],
-            },
-        }
-        trace = _trace(
+    reconciliation_context = prior.get("reconciliation_context")
+    reconciliation_intent = reconciliation_context is not None or (
+        "propagate" in objective_lower and "confirmed" in objective_lower
+    )
+    if reconciliation_intent:
+        reconciliation_outputs = run_reconciliation(
             task,
-            status="completed",
-            workflow="reconciliation",
-            reconciliation_ref=reconciliation_id,
-            events=[
-                {
-                    "event_type": "reconciliation",
-                    "status": "completed",
-                    "reference": reconciliation_id,
-                    "summary": "Authority-first reconciliation path completed.",
-                },
-                {
-                    "event_type": "verification",
-                    "status": "pass",
-                    "summary": "Modeled dependent state is consistent.",
-                },
-            ],
+            reconciliation_context,
+            make_approval=_approval,
+            make_result=_result,
+            make_trace=_trace,
         )
-        return {
-            "trace": trace,
-            "reconciliation": reconciliation,
-            "result": _result(
-                task,
-                status="complete",
-                finding="Routine reconciliation control path completed.",
-                owner_decision_required=False,
-            ),
-        }
+        return enforce_reconciliation_completion(
+            reconciliation_context,
+            reconciliation_outputs,
+        )
 
     if "specialist" in objective_lower:
         trace = _trace(

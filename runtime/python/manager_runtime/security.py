@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
 import ssl
@@ -37,11 +38,16 @@ class SecretLease:
     def __post_init__(self) -> None:
         if not isinstance(self._value, bytes) or not self._value:
             raise ValueError("secret lease value must be non-empty bytes")
-        if self.expires_at is not None and not isinstance(self.expires_at, (int, float)):
-            raise TypeError("secret lease expiry must be numeric when provided")
+        if self.expires_at is not None:
+            if not isinstance(self.expires_at, (int, float)) or isinstance(self.expires_at, bool):
+                raise TypeError("secret lease expiry must be numeric when provided")
+            if not math.isfinite(float(self.expires_at)):
+                raise ValueError("secret lease expiry must be finite when provided")
 
     def reveal(self, *, now: float | None = None) -> bytes:
         current = time.time() if now is None else float(now)
+        if not math.isfinite(current):
+            raise SecurityBoundaryError("credential_clock_invalid")
         if self.expires_at is not None and current >= float(self.expires_at):
             raise SecurityBoundaryError("credential_expired")
         return self._value
@@ -161,11 +167,16 @@ def _strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant {value!r}")
+
+
 def _json_segment(value: str, *, kind: str) -> dict[str, Any]:
     try:
         decoded = json.loads(
             _b64url_decode(value).decode("utf-8"),
             object_pairs_hook=_strict_object_pairs,
+            parse_constant=_reject_json_constant,
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise SecurityBoundaryError(f"identity_{kind}_malformed") from exc
@@ -174,11 +185,17 @@ def _json_segment(value: str, *, kind: str) -> dict[str, Any]:
     return decoded
 
 
-def _numeric_claim(claims: Mapping[str, Any], name: str) -> float:
-    value = claims.get(name)
+def _finite_numeric(value: Any, *, code: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
-        raise SecurityBoundaryError(f"identity_{name}_invalid")
-    return float(value)
+        raise SecurityBoundaryError(code)
+    result = float(value)
+    if not math.isfinite(result):
+        raise SecurityBoundaryError(code)
+    return result
+
+
+def _numeric_claim(claims: Mapping[str, Any], name: str) -> float:
+    return _finite_numeric(claims.get(name), code=f"identity_{name}_invalid")
 
 
 def _audiences(claims: Mapping[str, Any]) -> tuple[str, ...]:
@@ -330,7 +347,7 @@ class HS256JWTValidator:
         if not isinstance(principal_type, str) or not principal_type:
             raise SecurityBoundaryError("identity_principal_type_invalid")
 
-        now = float(self.clock())
+        now = _finite_numeric(self.clock(), code="identity_clock_invalid")
         skew = float(self.config.clock_skew_seconds)
         expires_at = _numeric_claim(claims, "exp")
         if now - skew >= expires_at:
@@ -338,15 +355,13 @@ class HS256JWTValidator:
         if self.config.require_nbf:
             not_before = _numeric_claim(claims, "nbf")
         else:
-            raw_nbf = claims.get("nbf")
-            not_before = float(raw_nbf) if isinstance(raw_nbf, (int, float)) and not isinstance(raw_nbf, bool) else 0.0
+            not_before = 0.0 if claims.get("nbf") is None else _numeric_claim(claims, "nbf")
         if now + skew < not_before:
             raise SecurityBoundaryError("identity_not_yet_valid")
         issued_at = claims.get("iat")
         if issued_at is not None:
-            if not isinstance(issued_at, (int, float)) or isinstance(issued_at, bool):
-                raise SecurityBoundaryError("identity_iat_invalid")
-            if float(issued_at) > now + skew:
+            issued_at = _numeric_claim(claims, "iat")
+            if issued_at > now + skew:
                 raise SecurityBoundaryError("identity_iat_invalid")
 
         token_id = claims.get("jti")
@@ -363,7 +378,7 @@ class HS256JWTValidator:
             "capabilities": list(_capabilities(claims)),
             "expires_at": expires_at,
             "not_before": not_before,
-            "issued_at": float(issued_at) if issued_at is not None else None,
+            "issued_at": issued_at,
             "token_id": token_id,
             "algorithm": alg,
         }
@@ -426,24 +441,25 @@ def _validated_identity(identity: Any, *, now: float, skew: float) -> dict[str, 
     capabilities = _normalized_string_list(
         identity.get("capabilities", []), field="identity_capabilities", allow_empty=True
     )
-    expires_at = identity.get("expires_at")
-    not_before = identity.get("not_before")
-    if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
-        raise SecurityBoundaryError("security_identity_expiry_invalid")
-    if not isinstance(not_before, (int, float)) or isinstance(not_before, bool):
-        raise SecurityBoundaryError("security_identity_not_before_invalid")
-    if now - skew >= float(expires_at):
+    expires_at = _finite_numeric(
+        identity.get("expires_at"), code="security_identity_expiry_invalid"
+    )
+    not_before = _finite_numeric(
+        identity.get("not_before"), code="security_identity_not_before_invalid"
+    )
+    if now - skew >= expires_at:
         raise SecurityBoundaryError("security_identity_expired")
-    if now + skew < float(not_before):
+    if now + skew < not_before:
         raise SecurityBoundaryError("security_identity_not_yet_valid")
     token_id = identity.get("token_id")
     if token_id is not None and (not isinstance(token_id, str) or not token_id):
         raise SecurityBoundaryError("security_identity_token_id_invalid")
     issued_at = identity.get("issued_at")
     if issued_at is not None:
-        if not isinstance(issued_at, (int, float)) or isinstance(issued_at, bool):
-            raise SecurityBoundaryError("security_identity_issued_at_invalid")
-        if float(issued_at) > now + skew:
+        issued_at = _finite_numeric(
+            issued_at, code="security_identity_issued_at_invalid"
+        )
+        if issued_at > now + skew:
             raise SecurityBoundaryError("security_identity_issued_at_invalid")
     return {
         "subject": identity["subject"],
@@ -451,9 +467,9 @@ def _validated_identity(identity: Any, *, now: float, skew: float) -> dict[str, 
         "audiences": audiences,
         "principal_type": identity["principal_type"],
         "capabilities": capabilities,
-        "expires_at": float(expires_at),
-        "not_before": float(not_before),
-        "issued_at": float(issued_at) if issued_at is not None else None,
+        "expires_at": expires_at,
+        "not_before": not_before,
+        "issued_at": issued_at,
         "token_id": token_id,
         "algorithm": identity["algorithm"],
     }
@@ -498,7 +514,10 @@ def evaluate_tool_authorization(
     skew = policy.get("clock_skew_seconds", 60)
     if not isinstance(skew, int) or isinstance(skew, bool) or skew < 0:
         raise SecurityBoundaryError("security_policy_clock_skew_invalid")
-    current = time.time() if now is None else float(now)
+    current = _finite_numeric(
+        time.time() if now is None else now,
+        code="security_clock_invalid",
+    )
     identity = _validated_identity(context.get("principal"), now=current, skew=float(skew))
 
     principal_revalidator = context.get("principal_revalidator")

@@ -72,12 +72,32 @@ class ReferenceRuntimeTests(unittest.TestCase):
         self.assertEqual(output["trace"]["status"], "blocked")
 
     def test_routine_reconciliation_is_authority_first(self) -> None:
-        output = run(
-            task(
-                "reconcile",
-                "Propagate an already-confirmed non-material wording change to dependent documentation.",
-            )
+        payload = task(
+            "reconcile",
+            "Propagate an already-confirmed non-material wording change to dependent documentation.",
         )
+        payload["prior_state"] = {
+            "reconciliation_context": {
+                "change_scope": "routine_propagation",
+                "candidate_owners": ["repo:canonical"],
+                "authoritative_owner": "repo:canonical",
+                "confirmation_evidence": "Synthetic maintainer-confirmed wording revision.",
+                "authority_evidence": "Synthetic repository-local governance identifies the canonical owner.",
+                "dependency_evidence": "Synthetic repository search traced the dependent documentation consumer.",
+                "confirmed_truth": "wording-v2",
+                "owner_state": "wording-v1",
+                "dependencies": ["repo:docs-consumer"],
+                "inspected_dependencies": ["repo:docs-consumer"],
+                "consumer_states": {"repo:docs-consumer": "wording-v1"},
+                "required_surfaces": {"repo:docs-consumer": ["docs"]},
+                "reconciled_surfaces": {"repo:docs-consumer": ["docs"]},
+                "verified_states": {
+                    "repo:canonical": "wording-v2",
+                    "repo:docs-consumer": "wording-v2",
+                },
+            }
+        }
+        output = run(payload)
         reconciliation = output["reconciliation"]
         self.assertEqual(reconciliation["classification"], "routine")
         self.assertEqual(reconciliation["actions"][0]["action_type"], "update_authority")

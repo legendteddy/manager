@@ -1,113 +1,168 @@
 # Release candidate build
 
-Manager separates release-candidate construction from publication. Building a candidate is reversible internal preparation; publishing a tag, GitHub Release, package, signed attestation, or other externally distributed artifact remains a separate approval boundary.
+Manager separates release-candidate construction from publication. Candidate construction is preparation and evidence gathering. It does not authorize a tag, GitHub Release, package upload, attestation, or deployment.
 
-## Supported Python baseline
+## Supported Python and dependency lanes
 
-The current Python reference package declares and tests:
+The Python package supports CPython 3.11 through 3.14 and declares `>=3.11,<3.15`.
 
-- Python 3.11
-- Python 3.12
-- Python 3.13
-- Python 3.14
+Two lanes are intentionally retained:
 
-The package metadata is bounded to `>=3.11,<3.15`. A future Python line is not supported merely because it happens to import successfully.
+1. **Compatibility lane.** CI exercises the dependency ranges declared in `pyproject.toml` on every supported Python line. This catches overly narrow or broken compatibility ranges.
+2. **Release reconstruction lane.** `runtime/python/constraints/known-good.txt` pins exact release-candidate root versions. On the release Python platform, the candidate workflow resolves the complete wheel closure for those roots, bundles those wheels, hashes every wheel, and emits an exact hash-locked requirements file.
 
-The required `public-safety` check depends on a compatibility matrix covering every advertised Python line. Each matrix job compiles the runtime, runs the base unit suite and deterministic evals, builds a wheel, installs it into an isolated target, and imports the public package.
+The generated candidate lock is platform-specific by design. It is not advertised as a universal cross-platform lock. This avoids replacing compatibility testing with one frozen environment while still making the exact release candidate independently reconstructable.
 
-## Two dependency lanes
-
-Manager intentionally keeps two dependency-testing modes.
-
-### Compatibility lane
-
-The Python matrix exercises the dependency ranges declared by the package and the runner's compatible packaging environment. This detects when the supported ranges stop working.
-
-### Known-good release-candidate lane
-
-`runtime/python/constraints/known-good.txt` records exact direct versions for the build tools and optional integrations used by release-candidate verification.
-
-This is a known-good direct baseline, not a complete transitive lock. It improves regression diagnosis without falsely claiming that every transitive dependency can be reconstructed offline byte-for-byte from this repository alone.
+The PEP 517 build backend is exact-pinned in `pyproject.toml` and the candidate builder uses `--no-isolation` after verifying the known-good build-tool versions.
 
 ## Candidate builder
 
-`scripts/build_release_candidate.py`:
+`scripts/build_release_candidate.py` fails closed on a dirty source tree and then:
 
-1. verifies the installed direct baseline;
-2. derives `SOURCE_DATE_EPOCH` from the exact Git commit;
-3. fixes `PYTHONHASHSEED` for the build process;
-4. builds one wheel and one source distribution with the known-good build frontend/backend baseline;
-5. calculates SHA-256 hashes for both artifacts;
-6. writes `SHA256SUMS`;
-7. writes `provenance.json` containing the commit, package version, Python/build-tool versions, build epoch, artifact hashes, and each artifact's verification policy.
+1. binds the build to the exact Git commit;
+2. derives `SOURCE_DATE_EPOCH` from that commit and fixes `PYTHONHASHSEED`;
+3. verifies the exact known-good release roots installed in the build environment;
+4. builds one wheel and one source distribution;
+5. normalizes source-distribution archive metadata, ownership, gzip timestamp, and member ordering;
+6. copies the resolved dependency wheelhouse into the candidate;
+7. emits `dependencies.lock.json` and deterministic `requirements.lock` with SHA-256 hashes for every dependency wheel;
+8. emits deterministic CycloneDX 1.6 JSON as `sbom.cdx.json`;
+9. emits `SHA256SUMS` for the package wheel and sdist;
+10. emits strengthened `provenance.json` containing commit, version, clean-tree assertion, build epoch, interpreter/platform identity, build-tool versions, dependency-lock identity, SBOM identity, artifact hashes, and verification policy;
+11. emits an unsigned in-toto Statement using the SLSA provenance predicate as `provenance.intoto.jsonl`;
+12. emits `candidate-manifest.json`, whose SHA-256 is the approval fingerprint for the complete candidate payload.
 
-### Wheel reproducibility gate
+The local in-toto statement is structured provenance evidence, not a signature. Keyless cryptographic GitHub attestations are intentionally created only at the separately protected publication boundary.
 
-The required CI gate builds the candidate twice from the same commit and requires the wheel filename and SHA-256 hash to match exactly. A wheel mismatch fails the required `public-safety` check.
+## Reproducibility claim
 
-This establishes byte reproducibility for the wheel in the verified same-environment build path used by CI. It does not establish cross-platform or independently reproduced build equivalence.
+Required CI builds two candidates from the same commit, independently resolves the release dependency wheelhouse twice, and requires equality for:
 
-### Source distribution integrity
+- wheel bytes;
+- normalized sdist bytes;
+- dependency wheelhouse bytes;
+- dependency lock;
+- hash-locked requirements;
+- SBOM;
+- provenance;
+- local in-toto statement;
+- candidate manifest.
 
-The source distribution is built and SHA-256 recorded, but Manager does **not** currently claim the Setuptools-generated `.tar.gz` is byte-reproducible. CI may observe different sdist hashes across repeated builds without treating that as a wheel-reproducibility failure.
+This establishes byte reproducibility in the verified same-run Ubuntu 24.04 / release-Python environment. It is not a cross-platform reproducibility claim.
 
-The sdist checksum still provides exact identity for the candidate produced by a particular build. If a future release requires byte-reproducible sdists, that must be established separately rather than inferred from the wheel result.
+The normalized sdist remains a standards-compatible `.tar.gz` source distribution. CI also asks pip to build a wheel from the normalized sdist using the already verified build environment.
 
-`provenance.json` is an inspectable build record. It is not a cryptographic attestation and does not authorize release.
+## Offline reconstruction
 
-## Manual candidate artifact
+After a candidate is built, its release dependency environment can be reconstructed without a package index:
 
-The `Build release candidate` workflow is manual-only. It:
+```bash
+python -m pip install \
+  --no-index \
+  --find-links release-candidate/dependencies \
+  --require-hashes \
+  -r release-candidate/requirements.lock
+```
 
-- checks out the selected revision;
-- uses Python 3.14 as the current release build interpreter;
-- installs the known-good direct baseline;
-- builds and smoke-tests the candidate;
-- uploads the candidate directory as a GitHub Actions artifact retained for seven days.
+Required CI executes this path. A modified dependency wheel or missing/mismatched hash invalidates the candidate manifest and the independent verifier.
 
-The workflow has `contents: read` permission only. It cannot create tags, GitHub Releases, packages, attestations, or repository mutations.
+## Independent verification
+
+Use:
+
+```bash
+python scripts/verify_release_candidate.py release-candidate \
+  --expected-commit <commit-sha> \
+  --expected-version <version> \
+  --expected-manifest-sha256 <reviewed-manifest-sha256> \
+  --pyproject runtime/python/pyproject.toml
+```
+
+The verifier checks the exact file set, every payload checksum, package checksums, commit/version binding, dependency lock, exact dependency-wheelhouse membership, hash-locked requirements rendering, SBOM identity and dependency components, Manager provenance identities, in-toto subjects and build predicate, and optional changelog hash.
+
+The verifier rejects extra files, symlinks, dependency wheels that are not represented by the lock, SBOM dependency omissions/substitutions, and stale or contradictory in-toto build identities. This prevents a candidate from quietly acquiring unreviewed payload or carrying semantically false release evidence merely because all files were rehashed into a new candidate manifest.
 
 ## Candidate contents
 
-A candidate bundle contains:
+A current candidate contains:
 
 ```text
 release-candidate/
   artifacts/
     manager_reference_runtime-<version>-py3-none-any.whl
     manager_reference_runtime-<version>.tar.gz
+  dependencies/
+    <exact resolved dependency wheels>
   SHA256SUMS
+  dependencies.lock.json
+  requirements.lock
+  sbom.cdx.json
   provenance.json
+  provenance.intoto.jsonl
+  candidate-manifest.json
 ```
 
-The provenance record marks the wheel as `byte_reproducibility_required` and the source distribution as `checksum_integrity_only`.
+The candidate-manifest SHA-256 is the single approval fingerprint. Any change to an artifact, dependency wheel, SBOM, provenance, lock, requirements file, or checksum file changes that fingerprint and makes a prior approval stale.
 
-## Release approval remains separate
+## Release authorization and trusted publishing
 
-Before any public release, verify the exact candidate against `docs/release-readiness.md` and bind approval to at least:
+`.github/workflows/release-publish.yml` is prepared but fail-closed by default. It does not run automatically.
 
-- commit SHA;
-- package version;
-- artifact filenames and SHA-256 hashes;
-- release notes/changelog;
-- required CI result;
-- known limitations;
-- security-reporting path;
-- intended publication target.
+A future publication requires all of the following:
 
-If any bound value changes, approval is stale and a new release decision is required.
+- an exact candidate workflow run ID;
+- exact commit SHA;
+- exact package version;
+- exact reviewed candidate-manifest SHA-256;
+- exact changelog SHA-256;
+- explicit destination `pypi`;
+- the exact commit still being current `main`;
+- successful `repository-integrity.yml` and `deployment-reference.yml` push runs on that exact commit;
+- repository variable `MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED=true`;
+- approval of the protected GitHub environment `pypi-release`;
+- a PyPI trusted-publisher configuration matching this repository, workflow, and environment.
 
-## Explicit non-claims
+The workflow re-downloads and re-verifies the exact candidate both before the protected-environment approval boundary and immediately before publication. It also checks both required exact-commit CI workflows at both boundaries. If `main` moves during review, required CI disappears/fails, or any bound value changes, publication fails and a fresh decision is required.
 
-Stage 14 does not establish:
+The publication job uses OIDC trusted publishing instead of a long-lived PyPI token. Immediately before upload it creates keyless GitHub build-provenance attestations for the package artifacts and the candidate manifest. No private signing key belongs in this repository.
 
-- byte-reproducible source distributions;
-- cross-platform reproducible builds;
-- a fully hashed transitive lock;
-- offline dependency reconstruction;
-- cryptographic artifact attestation;
-- SBOM publication;
-- package-registry trusted publishing;
-- release signing;
-- production readiness;
-- permission to publish the generated candidate.
+No part of candidate construction publishes anything.
+
+## Vulnerability visibility
+
+`.github/workflows/dependency-vulnerability.yml` runs a pinned `pip-audit` version on a weekly schedule and on manual dispatch. This is intentionally separate from deterministic offline unit tests because vulnerability databases are network-dependent and time-varying.
+
+A vulnerability report is evidence requiring triage. It is not an automatic authority to mutate dependency constraints or publish a release.
+
+## Attack coverage
+
+`runtime/python/tests/test_release_candidate_security.py` covers at least:
+
+- modified wheel;
+- modified sdist;
+- missing artifact;
+- wrong commit;
+- version mismatch;
+- dependency substitution;
+- an extra dependency wheel hidden behind a recomputed manifest;
+- missing dependency hash;
+- SBOM dependency omission after consistent rehashing/rebinding;
+- stale in-toto commit identity after the manifest is rebound;
+- candidate change after an approval fingerprint is recorded;
+- dirty source tree;
+- reproducibility failure;
+- deterministic sdist normalization.
+
+`runtime/python/tests/test_supply_chain_workflow_integrity.py` additionally protects the workflow-level release boundary by proving that every repository workflow enters the action-pinning scan and that publication retains both required exact-revision CI workflow checks.
+
+## Explicit limits
+
+The current machinery does not claim:
+
+- cross-platform dependency lock equivalence;
+- cross-platform byte reproducibility;
+- that a vulnerability database is complete or continuously available;
+- that GitHub/PyPI external configuration is enabled merely because workflows exist;
+- that private vulnerability reporting is enabled until repository settings are changed and verified;
+- permission to publish any candidate without the explicit release-authority path above;
+- production readiness for any deployment environment.

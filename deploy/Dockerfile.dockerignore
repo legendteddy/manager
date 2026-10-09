@@ -1,0 +1,16 @@
+.git
+.github
+contracts
+docs
+evals
+examples
+scripts
+runtime/python/tests
+**/__pycache__
+**/*.pyc
+**/*.pyo
+*.sqlite
+*.sqlite3
+*.db
+.env
+.env.*

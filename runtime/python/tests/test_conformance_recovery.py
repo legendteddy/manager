@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from manager_runtime.state import (
+    SQLITE_STATE_SCHEMA_VERSION,
     RunStateError,
     SQLiteRunStore,
     migrate_agent_loop_checkpoint,
@@ -174,6 +175,24 @@ def resolution(decision: str) -> dict:
     }
 
 
+def current_runtime_connection(path: Path) -> sqlite3.Connection:
+    """Open raw SQLite for corruption tests while identifying as current code.
+
+    Production callers should use SQLiteRunStore. These tests intentionally
+    bypass state validation to inject malformed rows, so they must explicitly
+    satisfy the schema-v3 mixed-runtime write fence instead of accidentally
+    behaving like a pre-coordination runtime.
+    """
+    connection = sqlite3.connect(path)
+    connection.create_function(
+        "manager_runtime_schema_version",
+        0,
+        lambda: SQLITE_STATE_SCHEMA_VERSION,
+        deterministic=True,
+    )
+    return connection
+
+
 class ConformanceRecoveryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -189,7 +208,7 @@ class ConformanceRecoveryTests(unittest.TestCase):
         store = SQLiteRunStore(self.path)
         state = recovery_state(self.registry)
         store.create(state)
-        with sqlite3.connect(self.path) as connection:
+        with current_runtime_connection(self.path) as connection:
             connection.execute(
                 "UPDATE manager_runs SET state_json = ? WHERE run_id = ?",
                 ("{not-json", state["run_id"]),
@@ -205,7 +224,7 @@ class ConformanceRecoveryTests(unittest.TestCase):
         corrupt["status"] = "waiting_approval"
         corrupt["pending_action"] = None
         payload = json.dumps(corrupt, sort_keys=True, separators=(",", ":"))
-        with sqlite3.connect(self.path) as connection:
+        with current_runtime_connection(self.path) as connection:
             connection.execute(
                 "UPDATE manager_runs SET state_json = ? WHERE run_id = ?",
                 (payload, state["run_id"]),
