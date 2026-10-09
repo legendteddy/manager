@@ -12,13 +12,10 @@ CASE_FILE = ROOT / "evals" / "coordination" / "cases.json"
 
 class ParallelCoordinationContractTests(unittest.TestCase):
     def test_fixture_suite_matches_expected_outcomes(self) -> None:
-        results = [
-            coordination.evaluate_case(case)
-            for case in coordination.load_cases(CASE_FILE)
-        ]
+        results = [coordination.evaluate_case(case) for case in coordination.load_cases(CASE_FILE)]
         failures = [result for result in results if not result["passed"]]
         self.assertEqual(failures, [], failures)
-        self.assertEqual(len(results), 20)
+        self.assertEqual(len(results), 25)
 
     def test_changed_file_must_be_within_declared_write_set(self) -> None:
         codes = {
@@ -58,11 +55,30 @@ class ParallelCoordinationContractTests(unittest.TestCase):
             with self.subTest(case_id=case_id):
                 codes = {
                     finding["code"]
-                    for finding in coordination.lint_state(
-                        coordination.scenario(case_id)
-                    )
+                    for finding in coordination.lint_state(coordination.scenario(case_id))
                 }
                 self.assertIn(code, codes)
+
+    def test_ready_handoff_requires_ready_claim_and_dependency_receipt(self) -> None:
+        expected = {
+            "ready-handoff-from-blocked-claim-rejected": "CLAIM_NOT_READY_FOR_HANDOFF",
+            "ready-handoff-with-blockers-rejected": "READY_HANDOFF_HAS_BLOCKERS",
+            "blocking-dependency-unknown-producer-rejected": "DEPENDENCY_PRODUCER_UNAVAILABLE",
+            "blocking-dependency-producer-advanced-rejected": "DEPENDENCY_HEAD_STALE",
+        }
+        for case_id, code in expected.items():
+            with self.subTest(case_id=case_id):
+                codes = {
+                    finding["code"]
+                    for finding in coordination.lint_state(coordination.scenario(case_id))
+                }
+                self.assertIn(code, codes)
+        self.assertEqual(
+            coordination.lint_state(
+                coordination.scenario("blocking-dependency-ready-accepted")
+            ),
+            [],
+        )
 
     def test_ambiguous_claim_history_fails_closed(self) -> None:
         expected = {
@@ -74,9 +90,7 @@ class ParallelCoordinationContractTests(unittest.TestCase):
             with self.subTest(case_id=case_id):
                 codes = {
                     finding["code"]
-                    for finding in coordination.lint_state(
-                        coordination.scenario(case_id)
-                    )
+                    for finding in coordination.lint_state(coordination.scenario(case_id))
                 }
                 self.assertIn(code, codes)
 
