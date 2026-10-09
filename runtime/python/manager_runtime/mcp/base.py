@@ -4,6 +4,8 @@ import hashlib
 import json
 from typing import Any, Protocol, runtime_checkable
 
+from ..serialization import strict_json_snapshot as _strict_json_snapshot
+
 
 class MCPBoundaryError(RuntimeError):
     """Raised when MCP discovery or execution cannot satisfy Manager's boundary."""
@@ -26,9 +28,22 @@ class MCPClient(Protocol):
         """Call one remote MCP tool after Manager has authorized execution."""
 
 
+def strict_json_snapshot(value: Any, *, label: str) -> Any:
+    """Return a detached strict-JSON value or fail the MCP boundary."""
+    try:
+        return _strict_json_snapshot(value, label=label)
+    except (TypeError, ValueError) as exc:
+        raise MCPBoundaryError(str(exc)) from exc
+
+
 def _stable_digest(value: Any) -> str:
+    normalized = strict_json_snapshot(value, label="MCP schema")
     encoded = json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
     ).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
@@ -51,7 +66,7 @@ def normalize_mcp_tool(value: Any) -> dict[str, Any]:
         raise MCPBoundaryError("MCP tool discovery entry must be an object")
 
     name = value.get("name")
-    if not isinstance(name, str) or not name:
+    if type(name) is not str or not name:
         raise MCPBoundaryError("MCP tool discovery entry requires a non-empty name")
 
     schema = value.get("inputSchema")
@@ -59,19 +74,25 @@ def normalize_mcp_tool(value: Any) -> dict[str, Any]:
         schema = value.get("input_schema")
     if not isinstance(schema, dict):
         raise MCPBoundaryError(f"MCP tool {name!r} is missing an input schema")
+    schema = strict_json_snapshot(schema, label=f"MCP tool {name!r} input schema")
 
     description = value.get("description")
-    if description is not None and not isinstance(description, str):
-        description = str(description)
+    if description is not None and type(description) is not str:
+        raise MCPBoundaryError(f"MCP tool {name!r} description must be text")
+
+    remote_metadata = strict_json_snapshot(
+        {
+            key: item
+            for key, item in value.items()
+            if key not in {"name", "description", "inputSchema", "input_schema"}
+        },
+        label=f"MCP tool {name!r} metadata",
+    )
 
     return {
         "name": name,
         "description": description,
         "input_schema": schema,
         "schema_fingerprint": remote_schema_fingerprint(schema),
-        "remote_metadata": {
-            key: item
-            for key, item in value.items()
-            if key not in {"name", "description", "inputSchema", "input_schema"}
-        },
+        "remote_metadata": remote_metadata,
     }
