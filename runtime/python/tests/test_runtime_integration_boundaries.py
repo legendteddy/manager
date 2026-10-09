@@ -7,6 +7,7 @@ from copy import deepcopy
 
 from manager_runtime.mcp import MCPBoundaryError, OfficialMCPClient, register_mcp_bindings
 from manager_runtime.mcp.base import normalize_mcp_tool
+from manager_runtime.serialization import bounded_json_text
 from manager_runtime.service.worker_pool import BoundedDaemonWorkerPool
 from manager_runtime.tools import ToolRegistry, execute_tool_request
 
@@ -102,6 +103,16 @@ def binding() -> dict:
     }
 
 
+class ExplosiveDict(dict):
+    def items(self):
+        raise AssertionError("dict subclass hook executed")
+
+
+class ExplosiveList(list):
+    def __iter__(self):
+        raise AssertionError("list subclass hook executed")
+
+
 class RuntimeIntegrationBoundaryTests(unittest.TestCase):
     def test_mcp_schema_fingerprint_rejects_nonfinite_json(self) -> None:
         remote = {
@@ -186,6 +197,14 @@ class RuntimeIntegrationBoundaryTests(unittest.TestCase):
         self.assertEqual("executed", result["status"])
         original["items"][0]["value"] = "after"
         self.assertEqual("before", result["output"]["items"][0]["value"])
+
+    def test_bounded_serialization_does_not_execute_collection_subclass_hooks(self) -> None:
+        rendered = bounded_json_text(
+            {"dict": ExplosiveDict({"x": 1}), "list": ExplosiveList([1])},
+            512,
+        )
+        self.assertIn("<ExplosiveDict>", rendered)
+        self.assertIn("<ExplosiveList>", rendered)
 
     def test_service_worker_shutdown_is_bounded_by_configured_deadline(self) -> None:
         entered = threading.Event()
