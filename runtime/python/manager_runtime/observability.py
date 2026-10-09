@@ -92,8 +92,6 @@ def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> An
         if isinstance(current, float):
             return current if math.isfinite(current) else "[NON_FINITE_NUMBER]"
         if isinstance(current, str):
-            # Only scan a bounded prefix because text after max_string_chars is
-            # never retained in telemetry anyway.
             bounded = current[: max_string_chars + 128]
             text = _BEARER.sub("Bearer [REDACTED]", bounded)
             text = _SECRETISH.sub(_REDACTED, text)
@@ -280,23 +278,51 @@ class JsonLoggingSink:
 class SafeTelemetry:
     """Provider-neutral, secret-minimizing telemetry facade.
 
-    Sink failures are swallowed and counted locally. Observability is never an
-    authority source and its failure cannot authorize, mutate, or deadlock work.
+    Sink and sanitization failures are contained and counted locally.
+    Observability is never an authority source and its failure cannot authorize,
+    mutate, deadlock, or replace the primary operation failure.
     """
 
     def __init__(self, sink: TelemetrySink | None = None) -> None:
         self.sink: TelemetrySink = sink or NullTelemetrySink()
         self._failure_lock = threading.Lock()
         self._sink_failures = 0
+        self._sanitization_failures = 0
 
     @property
     def sink_failures(self) -> int:
         with self._failure_lock:
             return self._sink_failures
 
-    def _failed(self) -> None:
+    @property
+    def sanitization_failures(self) -> int:
+        with self._failure_lock:
+            return self._sanitization_failures
+
+    def _sink_failed(self) -> None:
         with self._failure_lock:
             self._sink_failures += 1
+
+    def _sanitization_failed(self) -> None:
+        with self._failure_lock:
+            self._sanitization_failures += 1
+
+    def _safe_attributes(self, attributes: Mapping[str, Any] | None) -> dict[str, Any]:
+        try:
+            safe_attributes = redact(attributes or {})
+        except Exception:
+            self._sanitization_failed()
+            return {"telemetry_sanitization": "failed"}
+        if not isinstance(safe_attributes, dict):
+            return {"value": safe_attributes}
+        return safe_attributes
+
+    def _safe_labels(self, labels: Mapping[str, Any] | None) -> dict[str, str]:
+        try:
+            return safe_labels(labels)
+        except Exception:
+            self._sanitization_failed()
+            return {}
 
     def event(
         self,
@@ -307,16 +333,13 @@ class SafeTelemetry:
     ) -> None:
         if not isinstance(name, str) or not _SAFE_EVENT_NAME.fullmatch(name):
             name = "telemetry.invalid_event_name"
-        safe_attributes = redact(attributes or {})
-        if not isinstance(safe_attributes, dict):
-            safe_attributes = {"value": safe_attributes}
         event = StructuredEvent(
-            _now(), name, _safe_correlation(correlation), safe_attributes
+            _now(), name, _safe_correlation(correlation), self._safe_attributes(attributes)
         )
         try:
             self.sink.emit_event(event)
         except Exception:
-            self._failed()
+            self._sink_failed()
 
     def metric(self, name: str, kind: str, value: float, *, labels: Mapping[str, Any] | None = None) -> None:
         if kind not in {"counter", "gauge", "histogram"}:
@@ -324,11 +347,11 @@ class SafeTelemetry:
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
             raise ValueError("metric value must be a finite number")
         safe_name = name if isinstance(name, str) and _SAFE_METRIC_NAME.fullmatch(name) else "manager_invalid_metric"
-        point = MetricPoint(_now(), safe_name, kind, float(value), safe_labels(labels))
+        point = MetricPoint(_now(), safe_name, kind, float(value), self._safe_labels(labels))
         try:
             self.sink.emit_metric(point)
         except Exception:
-            self._failed()
+            self._sink_failed()
 
     @contextmanager
     def span(
@@ -349,9 +372,9 @@ class SafeTelemetry:
             safe_name = name if isinstance(name, str) and _SAFE_EVENT_NAME.fullmatch(name) else "telemetry.invalid_span_name"
             span = SpanRecord(
                 _now(), safe_name, max(0.0, time.monotonic() - started), status,
-                _safe_correlation(correlation), safe_labels(labels),
+                _safe_correlation(correlation), self._safe_labels(labels),
             )
             try:
                 self.sink.emit_span(span)
             except Exception:
-                self._failed()
+                self._sink_failed()
