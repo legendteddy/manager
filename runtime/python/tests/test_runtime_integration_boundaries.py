@@ -1,0 +1,189 @@
+from __future__ import annotations
+
+import unittest
+from copy import deepcopy
+
+from manager_runtime.mcp import MCPBoundaryError, OfficialMCPClient, register_mcp_bindings
+from manager_runtime.mcp.base import normalize_mcp_tool
+from manager_runtime.tools import ToolRegistry, execute_tool_request
+
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"value": {"type": "string"}},
+    "required": ["value"],
+    "additionalProperties": False,
+}
+
+
+def task() -> dict:
+    return {
+        "task_id": "integration-boundary-test",
+        "objective": "Exercise a synthetic integration boundary.",
+        "classification": {
+            "materiality": "routine",
+            "consequence": "low",
+            "uncertainty": "low",
+            "reversibility": "reversible",
+            "sensitivity": "public",
+        },
+    }
+
+
+def request(name: str = "lookup") -> dict:
+    return {
+        "request_id": f"request:{name}",
+        "run_id": "run:integration-boundary-test",
+        "tool_name": name,
+        "arguments": {"value": "synthetic"},
+        "target": None,
+        "proposed_by": "model",
+        "proposal_ref": f"proposal:{name}",
+    }
+
+
+def definition(name: str = "lookup") -> dict:
+    return {
+        "name": name,
+        "version": "1",
+        "description": "Synthetic integration-boundary lookup.",
+        "side_effect_class": "read",
+        "input_schema": deepcopy(SCHEMA),
+        "requires_verification": False,
+        "sensitive_output": False,
+    }
+
+
+class OutputTool:
+    def __init__(self, output) -> None:
+        self.output = output
+        self.calls = 0
+
+    def execute(self, arguments: dict):
+        self.calls += 1
+        return self.output
+
+
+class MCPClient:
+    server_id = "synthetic-mcp"
+
+    def __init__(self, output) -> None:
+        self.output = output
+        self.calls = 0
+
+    def list_tools(self):
+        return [
+            {
+                "name": "remote_lookup",
+                "description": "remote metadata is not policy",
+                "inputSchema": deepcopy(SCHEMA),
+            }
+        ]
+
+    def call_tool_checked(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        expected_schema_fingerprint: str,
+    ):
+        self.calls += 1
+        return self.output
+
+
+def binding() -> dict:
+    return {
+        "server_id": "synthetic-mcp",
+        "remote_tool_name": "remote_lookup",
+        "local_definition": definition("catalog.lookup"),
+    }
+
+
+class RuntimeIntegrationBoundaryTests(unittest.TestCase):
+    def test_mcp_schema_fingerprint_rejects_nonfinite_json(self) -> None:
+        remote = {
+            "name": "bad_schema",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"value": {"const": float("nan")}},
+            },
+        }
+        with self.assertRaisesRegex(MCPBoundaryError, "non-finite|strict JSON"):
+            normalize_mcp_tool(remote)
+
+    def test_official_mcp_arguments_reject_nonfinite_json(self) -> None:
+        client = OfficialMCPClient("synthetic", "http://127.0.0.1:1/mcp")
+        with self.assertRaisesRegex(MCPBoundaryError, "non-finite|strict JSON"):
+            client._validate_arguments({"value": float("inf")})
+
+    def test_mcp_adapter_rejects_nonfinite_result(self) -> None:
+        client = MCPClient({"value": float("nan")})
+        registry = ToolRegistry()
+        register_mcp_bindings(registry, client, [binding()])
+        registered = registry.get("catalog.lookup")
+        assert registered is not None
+        with self.assertRaisesRegex(MCPBoundaryError, "non-finite|strict JSON"):
+            registered.adapter.execute({"value": "synthetic"})
+        self.assertEqual(1, client.calls)
+
+    def test_native_tool_rejects_nonfinite_output(self) -> None:
+        registry = ToolRegistry()
+        tool = OutputTool({"value": float("nan")})
+        registry.register(definition(), tool)
+        result = execute_tool_request(
+            task(),
+            request(),
+            registry,
+            {"scope_authorized": True},
+        )
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("invalid_tool_output", result["decision_reason"])
+        self.assertEqual("unverified", result["verification"]["status"])
+        self.assertNotIn("output", result)
+        self.assertEqual(1, tool.calls)
+
+    def test_native_tool_rejects_python_only_output(self) -> None:
+        registry = ToolRegistry()
+        tool = OutputTool({"value": object()})
+        registry.register(definition(), tool)
+        result = execute_tool_request(
+            task(),
+            request(),
+            registry,
+            {"scope_authorized": True},
+        )
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("invalid_tool_output", result["decision_reason"])
+
+    def test_native_tool_rejects_cyclic_output(self) -> None:
+        cycle: dict = {}
+        cycle["self"] = cycle
+        registry = ToolRegistry()
+        registry.register(definition(), OutputTool(cycle))
+        result = execute_tool_request(
+            task(),
+            request(),
+            registry,
+            {"scope_authorized": True},
+        )
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("invalid_tool_output", result["decision_reason"])
+
+    def test_native_tool_result_is_detached_from_adapter_state(self) -> None:
+        original = {"items": [{"value": "before"}]}
+        registry = ToolRegistry()
+        tool = OutputTool(original)
+        registry.register(definition(), tool)
+        result = execute_tool_request(
+            task(),
+            request(),
+            registry,
+            {"scope_authorized": True},
+        )
+        self.assertEqual("executed", result["status"])
+        original["items"][0]["value"] = "after"
+        self.assertEqual("before", result["output"]["items"][0]["value"])
+
+
+if __name__ == "__main__":
+    unittest.main()
