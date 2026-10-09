@@ -66,6 +66,17 @@ class CountingMapping(Mapping):
         return "value"
 
 
+class BrokenMapping(Mapping):
+    def __len__(self):
+        return 1
+
+    def __iter__(self):
+        raise RuntimeError("synthetic telemetry mapping failure")
+
+    def __getitem__(self, key):
+        raise RuntimeError("synthetic telemetry mapping failure")
+
+
 class SREObservabilityTests(unittest.TestCase):
     def test_redaction_hides_sensitive_fields_and_tokens(self):
         sink = InMemoryTelemetrySink(32)
@@ -123,6 +134,35 @@ class SREObservabilityTests(unittest.TestCase):
         )
         self.assertTrue(result["ok"])
         self.assertGreater(operations.telemetry.sink_failures, 0)
+
+    def test_event_sanitization_failure_is_contained_and_visible(self):
+        sink = InMemoryTelemetrySink(8)
+        telemetry = SafeTelemetry(sink)
+        telemetry.event("run.started", attributes=BrokenMapping())
+        snapshot = sink.snapshot()
+        self.assertEqual(len(snapshot["records"]), 1)
+        event = snapshot["records"][0][1]
+        self.assertEqual(event.attributes, {"telemetry_sanitization": "failed"})
+        self.assertEqual(telemetry.sanitization_failures, 1)
+
+    def test_metric_label_sanitization_failure_is_contained(self):
+        sink = InMemoryTelemetrySink(8)
+        telemetry = SafeTelemetry(sink)
+        telemetry.metric("manager_active_runs", "gauge", 1, labels=BrokenMapping())
+        metric = sink.snapshot()["records"][0][1]
+        self.assertEqual(metric.labels, {})
+        self.assertEqual(telemetry.sanitization_failures, 1)
+
+    def test_span_sanitization_cannot_replace_primary_failure(self):
+        sink = InMemoryTelemetrySink(8)
+        telemetry = SafeTelemetry(sink)
+        with self.assertRaisesRegex(RuntimeError, "primary operation failed"):
+            with telemetry.span("run.started", labels=BrokenMapping()):
+                raise RuntimeError("primary operation failed")
+        span = sink.snapshot()["records"][0][1]
+        self.assertEqual(span.status, "failed")
+        self.assertEqual(span.labels, {})
+        self.assertEqual(telemetry.sanitization_failures, 1)
 
     def test_telemetry_buffer_is_bounded_under_stress(self):
         sink = InMemoryTelemetrySink(25)
