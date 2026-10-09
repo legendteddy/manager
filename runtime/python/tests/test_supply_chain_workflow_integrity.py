@@ -33,7 +33,7 @@ class SupplyChainWorkflowIntegrityTests(unittest.TestCase):
         self.assertEqual(set(repository_integrity.SUPPLY_CHAIN_WORKFLOWS), expected)
         self.assertIn(workflows_dir / "deployment-reference.yml", expected)
 
-    def test_unpinned_action_in_arbitrary_workflow_is_rejected(self):
+    def test_unpinned_action_in_compact_workflow_step_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             workflow = Path(tmp) / "new-release-lane.yml"
             workflow.write_text(
@@ -43,6 +43,19 @@ class SupplyChainWorkflowIntegrityTests(unittest.TestCase):
             failures: list[str] = []
             repository_integrity.validate_supply_chain_workflow(workflow, failures)
             self.assertTrue(any("pinned to a 40-hex commit" in failure for failure in failures))
+
+    def test_dispatch_input_in_compact_run_step_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = Path(tmp) / "unsafe-dispatch.yml"
+            workflow.write_text(
+                "jobs:\n  test:\n    steps:\n      - run: |\n          echo '${{ inputs.target }}'\n",
+                encoding="utf-8",
+            )
+            failures: list[str] = []
+            repository_integrity.validate_supply_chain_workflow(workflow, failures)
+            self.assertTrue(
+                any("must enter shell through env" in failure for failure in failures)
+            )
 
     def test_release_publish_requires_both_exact_revision_ci_workflows(self):
         publish = (ROOT / ".github" / "workflows" / "release-publish.yml").read_text(
