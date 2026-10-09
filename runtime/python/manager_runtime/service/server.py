@@ -638,11 +638,22 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def _sqlite_dependency(path: str) -> bool | tuple[bool, str]:
+    import sqlite3
+
+    connection: sqlite3.Connection | None = None
     try:
-        store = SQLiteRunStore(path)
-        store.load("__manager_health_probe_missing__")
-    except Exception as exc:
+        connection = sqlite3.connect(path, timeout=0.1)
+        connection.execute("PRAGMA query_only = ON")
+        row = connection.execute(
+            "SELECT value FROM manager_state_meta WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is None:
+            return False, "state schema metadata unavailable"
+    except sqlite3.Error as exc:
         return False, f"state backend unavailable ({type(exc).__name__})"
+    finally:
+        if connection is not None:
+            connection.close()
     return True
 
 
