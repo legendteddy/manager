@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import threading
+import time
 import unittest
 from copy import deepcopy
 
 from manager_runtime.mcp import MCPBoundaryError, OfficialMCPClient, register_mcp_bindings
 from manager_runtime.mcp.base import normalize_mcp_tool
+from manager_runtime.service.worker_pool import BoundedDaemonWorkerPool
 from manager_runtime.tools import ToolRegistry, execute_tool_request
 
 
@@ -183,6 +186,50 @@ class RuntimeIntegrationBoundaryTests(unittest.TestCase):
         self.assertEqual("executed", result["status"])
         original["items"][0]["value"] = "after"
         self.assertEqual("before", result["output"]["items"][0]["value"])
+
+    def test_service_worker_shutdown_is_bounded_by_configured_deadline(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        pool = BoundedDaemonWorkerPool(
+            max_workers=1,
+            max_pending=2,
+            shutdown_timeout_seconds=0.05,
+            thread_name_prefix="test-manager-http",
+        )
+
+        def block() -> None:
+            entered.set()
+            release.wait(2.0)
+
+        pool.submit(block)
+        self.assertTrue(entered.wait(1.0))
+        started = time.monotonic()
+        self.assertFalse(pool.shutdown(wait=True))
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.5)
+        self.assertTrue(all(thread.daemon for thread in pool._threads))
+        with self.assertRaises(RuntimeError):
+            pool.submit(lambda: None)
+
+        release.set()
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if pool.shutdown(wait=True):
+                break
+            time.sleep(0.01)
+        self.assertTrue(pool.shutdown(wait=True))
+
+    def test_service_worker_shutdown_drains_cooperative_work(self) -> None:
+        completed = threading.Event()
+        pool = BoundedDaemonWorkerPool(
+            max_workers=1,
+            max_pending=1,
+            shutdown_timeout_seconds=0.5,
+            thread_name_prefix="test-manager-http",
+        )
+        pool.submit(completed.set)
+        self.assertTrue(pool.shutdown(wait=True))
+        self.assertTrue(completed.is_set())
 
 
 if __name__ == "__main__":
