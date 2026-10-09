@@ -71,7 +71,7 @@ declared -> active -> blocked -> active -> ready_for_handoff
 
 When scope, write set, dependency contract, or hotspot handling changes, post the revised claim **before** performing the expanded work. Increment `claim_revision`. Never edit history into ambiguity by silently widening the old packet.
 
-Old claim revisions remain evidence but are no longer the current mutation authority for that work package.
+Old claim revisions remain evidence but are no longer the current mutation authority for that work package. Claim-list serialization order carries no authority. Per worker, revision numbers must be unique; at most one claim may be current (`declared`, `active`, `blocked`, or `ready_for_handoff`); and that current claim must be the highest retained revision. Lower revisions are historical (`superseded` or `withdrawn`). A handoff binds to that explicitly resolved current revision, never to whichever claim happens to appear last in a list.
 
 ## Collision check before mutation
 
@@ -129,7 +129,7 @@ Re-read live coordination state when any of these triggers occurs:
 
 A stale base is not automatically wrong. Record one disposition before continuing: `unrelated_reviewed`, `rebase_required`, `integrator_sequence`, or `superseded`.
 
-Evidence is bound to the revision actually tested. If the branch or PR head changes later, do not reuse the prior PASS as proof for the new head.
+Evidence is bound to the revision actually tested. If the branch or PR head changes later, do not reuse the prior PASS as proof for the new head. A `ready_for_integration` handoff also requires a fresh live observation of both the branch head and PR head; omitting live head state is not equivalent to proving it unchanged.
 
 ## Scope expansion and adjacent defects
 
@@ -182,7 +182,7 @@ dependencies_consumed: []
 out_of_scope_findings: []
 ```
 
-`ready_for_integration` means the packet is internally complete. It does **not** mean the integrator must select it, that CI is green unless stated and verified, or that the system is production-ready.
+`ready_for_integration` means the packet is internally complete, every reported test in the packet passed, and the tested head has been reconciled against fresh live branch/PR head observations. A failed test cannot be carried inside a ready packet; use a blocked/non-ready handoff instead. It does **not** mean the integrator must select the implementation or that the system is production-ready.
 
 A blocked return uses the existing bounded-handoff failure fields: `blocked_on`, `why_it_matters`, `what_was_tried`, `smallest_missing_input_or_permission`, and `safe_default_if_any`.
 
@@ -208,7 +208,7 @@ python coordination/validate.py evals/coordination/cases.json
 python -m unittest discover -s runtime/python/tests -p 'test_parallel_coordination.py' -v
 ```
 
-The validator is intentionally narrow. It detects structural coordination hazards such as duplicate scope/write claims, unsafe hotspot overlap, stale base/branch/PR binding, unresolved blocking dependencies, mission drift, undeclared changed files, lost out-of-scope findings, and incomplete integrator packets.
+The validator is intentionally narrow. It detects structural coordination hazards such as duplicate scope/write claims, unsafe hotspot overlap, stale or unobserved branch/PR binding, unresolved blocking dependencies, mission drift, undeclared changed files, failed/missing test evidence, lost out-of-scope findings, and incomplete integrator packets.
 
 It does not decide domain correctness, assign authority, approve scope, or select implementations. Those remain governance/integrator decisions.
 
