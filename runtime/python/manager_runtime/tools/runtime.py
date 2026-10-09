@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -161,6 +163,53 @@ def _approval_state(
     return True, supplied
 
 
+def _canonical_security_approval_binding(
+    authorization: ToolPayload,
+    decision: ToolPayload,
+) -> str:
+    """Bind approval to policy semantics, not only a caller-managed revision label."""
+    policy = authorization.get("security_policy")
+    context = authorization.get("security_context")
+    if not isinstance(policy, dict) or not isinstance(context, dict):
+        raise SecurityBoundaryError("security_context_invalid")
+
+    revalidator = context.get("principal_revalidator")
+    revalidator_revision = context.get("principal_revalidator_revision")
+    if revalidator_revision is not None and (
+        not isinstance(revalidator_revision, str) or not revalidator_revision
+    ):
+        raise SecurityBoundaryError("security_principal_revalidator_revision_invalid")
+    if revalidator is None and revalidator_revision is not None:
+        raise SecurityBoundaryError("security_principal_revalidator_revision_orphaned")
+
+    policy_snapshot = {
+        "revision": policy.get("revision"),
+        "clock_skew_seconds": policy.get("clock_skew_seconds", 60),
+        "allowed_principal_types": policy.get("allowed_principal_types"),
+        "max_authorization_age_seconds": policy.get("max_authorization_age_seconds"),
+        "rules": policy.get("rules"),
+    }
+    payload = {
+        "authorization_decision": decision.get("binding"),
+        "policy": policy_snapshot,
+        "principal_revalidation": {
+            "enabled": revalidator is not None,
+            "revision": revalidator_revision,
+        },
+    }
+    try:
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise SecurityBoundaryError("security_approval_binding_not_canonical") from exc
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
 def _security_decision(
     authorization: ToolPayload,
     request: ToolPayload,
@@ -171,6 +220,9 @@ def _security_decision(
         return None
     if not isinstance(decision, dict) or not isinstance(decision.get("allowed"), bool):
         raise SecurityBoundaryError("security_decision_invalid")
+    if decision["allowed"]:
+        decision = dict(decision)
+        decision["binding"] = _canonical_security_approval_binding(authorization, decision)
     return decision
 
 
