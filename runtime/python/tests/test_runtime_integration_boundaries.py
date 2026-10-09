@@ -219,8 +219,8 @@ class RuntimeIntegrationBoundaryTests(unittest.TestCase):
             {"dict": ExplosiveDict({"x": 1}), "list": ExplosiveList([1])},
             512,
         )
-        self.assertIn("<ExplosiveDict>", rendered)
-        self.assertIn("<ExplosiveList>", rendered)
+        self.assertIn('"dict":{"x":1}', rendered)
+        self.assertIn('"list":[1]', rendered)
 
     def test_service_worker_shutdown_is_bounded_by_configured_deadline(self) -> None:
         entered = threading.Event()
