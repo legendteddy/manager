@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .base import RunState, RunStateConflict, RunStateError
 from .sqlite_store import SQLITE_STATE_SCHEMA_VERSION, SQLiteRunStore as _CoordinatedSQLiteRunStore
-from .transitions import validate_run_state_shape, validate_run_state_transition
+from .transitions import validate_durable_run_state_transition, validate_run_state_shape
 
 
 def _reject_nonfinite(value: str) -> None:
@@ -95,7 +95,7 @@ class SQLiteRunStore(_CoordinatedSQLiteRunStore):
         previous = self._decoded(row["state_json"])
         if previous.get("revision") != row["revision"]:
             raise RunStateError("persisted run revision metadata does not match serialized state")
-        validate_run_state_transition(previous, candidate)
+        validate_durable_run_state_transition(previous, candidate)
         cursor = connection.execute(
             """
             UPDATE manager_runs
