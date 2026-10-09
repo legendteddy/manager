@@ -4,8 +4,11 @@ import json
 import socket
 import threading
 import unittest
+from types import SimpleNamespace
 
 from manager_runtime.deployment.config import DeploymentConfig
+from manager_runtime.providers.base import ProviderMalformedResponseError
+from manager_runtime.providers.openai_adapter import OpenAIResponsesAdapter
 from manager_runtime.serialization import bounded_json_text
 from manager_runtime.service.server import ManagerServiceSettings, create_service_server
 
@@ -181,6 +184,48 @@ class ToolResultSerializationAdversarialTests(unittest.TestCase):
                 except AssertionError as exc:
                     self.fail(str(exc))
                 self.assertLessEqual(len(rendered), 128)
+
+
+class ProviderBoundaryAdversarialTests(unittest.TestCase):
+    def test_recursion_hostile_function_arguments_normalize_as_malformed_response(self) -> None:
+        """Provider JSON parser limits must remain inside the normalized malformed-response boundary."""
+        deep_arguments = '{"x":' * 1500 + "0" + "}" * 1500
+        raw = SimpleNamespace(
+            id="resp:validation09",
+            model="gpt-test",
+            status="completed",
+            output_text="",
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call:validation09",
+                    name="lookup",
+                    arguments=deep_arguments,
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                return raw
+
+        client = SimpleNamespace(responses=FakeResponses())
+        adapter = OpenAIResponsesAdapter(client=client)
+        request = {
+            "request_id": "request:validation09",
+            "model": "gpt-test",
+            "input": "synthetic",
+            "tools": [
+                {
+                    "name": "lookup",
+                    "description": "Synthetic lookup.",
+                    "input_schema": {"type": "object"},
+                }
+            ],
+        }
+        with self.assertRaises(ProviderMalformedResponseError):
+            adapter.generate(request)
 
 
 if __name__ == "__main__":
