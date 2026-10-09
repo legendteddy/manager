@@ -23,9 +23,11 @@ Telemetry is intentionally lossy. Do not use it as a payload dump channel.
 
 By default the sanitizer redacts fields whose names indicate credentials, tokens, authorization, cookies, sessions, prompts, model input, tool arguments, headers, private context, environment data or generic payload/context blobs. Bearer-style and common secret-like token strings are also redacted from otherwise ordinary strings. Arbitrary objects become their type name instead of invoking custom serialization.
 
+Redaction is bounded globally as well as per container. The default traversal budget is 256 retained nodes per telemetry value, in addition to the depth, item-count and string-length bounds. When the global budget is exhausted, telemetry records an explicit truncation marker rather than continuing through a wide nested structure.
+
 Correlation identifiers that are not restricted identifier strings are replaced by a stable SHA-256-derived short hash. This keeps correlation useful without copying private text into telemetry.
 
-Metric labels are allowlisted to low-cardinality dimensions. High-cardinality identifiers such as run IDs, tool names, request IDs, user IDs and arbitrary targets belong in correlation fields or sanitized events, not metric labels.
+Metric label keys are allowlisted to low-cardinality dimensions. `SafeTelemetry` also keeps at most 64 distinct sanitized values per label key for the lifetime of that telemetry instance; further novel values are aggregated to `overflow` and counted locally. High-cardinality identifiers such as run IDs, tool names, request IDs, user IDs and arbitrary targets belong in correlation fields or sanitized events, not metric labels.
 
 ## Failure semantics
 
@@ -33,7 +35,7 @@ Telemetry sink failure is fail-safe and non-authoritative. `SafeTelemetry` catch
 
 Telemetry sanitization is also fail-safe. If a caller-supplied mapping fails while being traversed for event attributes or labels, `SafeTelemetry` records a separate in-process sanitization-failure count. Event attributes fall back to a bounded `telemetry_sanitization=failed` marker and metric/span labels fall back to an empty set. A telemetry sanitization failure must not replace the primary operation result or exception.
 
-`OperationalRuntime.health()` reports both sink and sanitization failure counts. Either kind of telemetry failure marks operational health `degraded`; capacity saturation remains `saturated`. These local counters are fallback diagnostics when the external telemetry backend cannot be trusted to report its own failure.
+`OperationalRuntime.health()` reports sink failures, sanitization failures and metric-label cardinality overflows. Any of those observability conditions marks operational health `degraded`; capacity saturation remains `saturated`. These local counters are fallback diagnostics when the external telemetry backend cannot be trusted to report its own failure or overload.
 
 Capacity failure is different. Concurrency gates use non-blocking acquisition. When capacity is exhausted, new work receives `OverloadedError` immediately rather than waiting in hidden queues. The bounded run queue raises the same error when full. Governed tool overload is represented as a blocked `overload_rejected` tool result before a second adapter call can occur. MCP overload is normalized through the MCP boundary without exposing target or credential details.
 
@@ -107,6 +109,7 @@ These are generic conditions, not organization-specific thresholds:
 - provider latency/error/timeout increase isolated to a provider;
 - MCP latency/error/timeout increase isolated to MCP transport;
 - telemetry sink or sanitization failures above zero for a sustained interval;
+- any sustained growth in metric-label cardinality overflow;
 - repeated budget exhaustion, duplicate suppression or retry amplification;
 - checkpoint-size rejection, which indicates state growth approaching the configured envelope.
 
@@ -121,10 +124,10 @@ Exact paging thresholds, retention periods and SLO/error budgets require maintai
 5. For `recovery_required`, follow the recovery procedure and reconcile real-world outcome before retrying.
 6. If state is degraded, reduce admission/concurrency before increasing retry pressure.
 7. If a provider or MCP backend is degraded, avoid retry storms; use bounded retries only where the governing call semantics allow them.
-8. If telemetry itself is failing, inspect both local sink and sanitization failure counters plus health diagnostics. Repair the telemetry path without weakening authorization or dumping secrets.
+8. If telemetry itself is failing or overflowing label cardinality, inspect local health counters first. Repair the telemetry path or label source without weakening authorization, disabling bounds or dumping secrets.
 
 ## Synthetic stress coverage
 
-The reference tests use no real providers. They exercise thousands of telemetry records against bounded buffers, telemetry sink and sanitization failure, slow model saturation, slow governed-tool saturation, slow state-backend saturation, bounded queue overflow, 1,000 rejection bursts, retry/cancellation/completion/duplicate storms, backlog gauges, checkpoint-size rejection, high-cardinality label filtering and secret non-disclosure during overload.
+The reference tests use no real providers. They exercise thousands of telemetry records against bounded buffers, global redaction traversal bounds, metric-label cardinality limits, telemetry sink and sanitization failure, slow model saturation, slow governed-tool saturation, slow state-backend saturation, bounded queue overflow, 1,000 rejection bursts, retry/cancellation/completion/duplicate storms, backlog gauges, checkpoint-size rejection, high-cardinality label filtering and secret non-disclosure during overload.
 
 These tests establish repeatable behavior for the reference primitives. They are not a deployment-specific capacity benchmark. A production service still needs environment-specific load tests for its HTTP/service queue, cancellation propagation, provider quotas, datastore topology, process model, MCP servers and real resource limits.
