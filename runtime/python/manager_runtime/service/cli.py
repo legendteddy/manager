@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .server import run_service
+from .gateway import run_service
 
 
 def main() -> int:
