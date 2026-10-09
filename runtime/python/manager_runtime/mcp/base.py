@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from typing import Any, Protocol, runtime_checkable
+
+from ..serialization import strict_json_snapshot as _strict_json_snapshot
 
 
 class MCPBoundaryError(RuntimeError):
@@ -29,47 +30,10 @@ class MCPClient(Protocol):
 
 def strict_json_snapshot(value: Any, *, label: str) -> Any:
     """Return a detached strict-JSON value or fail the MCP boundary."""
-    stack = [value]
-    seen_containers: set[int] = set()
-    while stack:
-        current = stack.pop()
-        current_type = type(current)
-        if current is None or current_type in {bool, str, int}:
-            continue
-        if current_type is float:
-            if not math.isfinite(current):
-                raise MCPBoundaryError(f"{label} contains a non-finite number")
-            continue
-        if current_type is dict:
-            identity = id(current)
-            if identity in seen_containers:
-                continue
-            seen_containers.add(identity)
-            for key, item in current.items():
-                if type(key) is not str:
-                    raise MCPBoundaryError(f"{label} object keys must be strings")
-                stack.append(item)
-            continue
-        if current_type is list:
-            identity = id(current)
-            if identity in seen_containers:
-                continue
-            seen_containers.add(identity)
-            stack.extend(current)
-            continue
-        raise MCPBoundaryError(f"{label} contains a non-JSON value")
-
     try:
-        encoded = json.dumps(
-            value,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-            check_circular=True,
-        )
-        return json.loads(encoded)
-    except (TypeError, ValueError, RecursionError) as exc:
-        raise MCPBoundaryError(f"{label} must be strict JSON") from exc
+        return _strict_json_snapshot(value, label=label)
+    except (TypeError, ValueError) as exc:
+        raise MCPBoundaryError(str(exc)) from exc
 
 
 def _stable_digest(value: Any) -> str:
@@ -102,7 +66,7 @@ def normalize_mcp_tool(value: Any) -> dict[str, Any]:
         raise MCPBoundaryError("MCP tool discovery entry must be an object")
 
     name = value.get("name")
-    if not isinstance(name, str) or not name:
+    if type(name) is not str or not name:
         raise MCPBoundaryError("MCP tool discovery entry requires a non-empty name")
 
     schema = value.get("inputSchema")
@@ -110,19 +74,25 @@ def normalize_mcp_tool(value: Any) -> dict[str, Any]:
         schema = value.get("input_schema")
     if not isinstance(schema, dict):
         raise MCPBoundaryError(f"MCP tool {name!r} is missing an input schema")
+    schema = strict_json_snapshot(schema, label=f"MCP tool {name!r} input schema")
 
     description = value.get("description")
-    if description is not None and not isinstance(description, str):
-        description = str(description)
+    if description is not None and type(description) is not str:
+        raise MCPBoundaryError(f"MCP tool {name!r} description must be text")
+
+    remote_metadata = strict_json_snapshot(
+        {
+            key: item
+            for key, item in value.items()
+            if key not in {"name", "description", "inputSchema", "input_schema"}
+        },
+        label=f"MCP tool {name!r} metadata",
+    )
 
     return {
         "name": name,
         "description": description,
         "input_schema": schema,
         "schema_fingerprint": remote_schema_fingerprint(schema),
-        "remote_metadata": {
-            key: item
-            for key, item in value.items()
-            if key not in {"name", "description", "inputSchema", "input_schema"}
-        },
+        "remote_metadata": remote_metadata,
     }
