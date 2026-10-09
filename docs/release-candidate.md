@@ -78,9 +78,9 @@ python scripts/verify_release_candidate.py release-candidate \
   --pyproject runtime/python/pyproject.toml
 ```
 
-The verifier checks the exact file set, every payload checksum, package checksums, commit/version binding, dependency lock, hash-locked requirements rendering, SBOM identity, provenance identities, in-toto subjects, and optional changelog hash.
+The verifier checks the exact file set, every payload checksum, package checksums, commit/version binding, dependency lock, exact dependency-wheelhouse membership, hash-locked requirements rendering, SBOM identity and dependency components, Manager provenance identities, in-toto subjects and build predicate, and optional changelog hash.
 
-The verifier rejects extra files and symlinks. This prevents a candidate from quietly acquiring unreviewed payload after approval.
+The verifier rejects extra files, symlinks, dependency wheels that are not represented by the lock, SBOM dependency omissions/substitutions, and stale or contradictory in-toto build identities. This prevents a candidate from quietly acquiring unreviewed payload or carrying semantically false release evidence merely because all files were rehashed into a new candidate manifest.
 
 ## Candidate contents
 
@@ -117,12 +117,12 @@ A future publication requires all of the following:
 - exact changelog SHA-256;
 - explicit destination `pypi`;
 - the exact commit still being current `main`;
-- `public-safety` succeeding on that exact commit;
+- successful `repository-integrity.yml` and `deployment-reference.yml` push runs on that exact commit;
 - repository variable `MANAGER_PYPI_TRUSTED_PUBLISHING_ENABLED=true`;
 - approval of the protected GitHub environment `pypi-release`;
 - a PyPI trusted-publisher configuration matching this repository, workflow, and environment.
 
-The workflow re-downloads and re-verifies the exact candidate both before the protected-environment approval boundary and immediately before publication. If `main` moves during review, or any bound value changes, publication fails and a fresh decision is required.
+The workflow re-downloads and re-verifies the exact candidate both before the protected-environment approval boundary and immediately before publication. It also checks both required exact-commit CI workflows at both boundaries. If `main` moves during review, required CI disappears/fails, or any bound value changes, publication fails and a fresh decision is required.
 
 The publication job uses OIDC trusted publishing instead of a long-lived PyPI token. Immediately before upload it creates keyless GitHub build-provenance attestations for the package artifacts and the candidate manifest. No private signing key belongs in this repository.
 
@@ -144,11 +144,16 @@ A vulnerability report is evidence requiring triage. It is not an automatic auth
 - wrong commit;
 - version mismatch;
 - dependency substitution;
+- an extra dependency wheel hidden behind a recomputed manifest;
 - missing dependency hash;
+- SBOM dependency omission after consistent rehashing/rebinding;
+- stale in-toto commit identity after the manifest is rebound;
 - candidate change after an approval fingerprint is recorded;
 - dirty source tree;
 - reproducibility failure;
 - deterministic sdist normalization.
+
+`runtime/python/tests/test_supply_chain_workflow_integrity.py` additionally protects the workflow-level release boundary by proving that every repository workflow enters the action-pinning scan and that publication retains both required exact-revision CI workflow checks.
 
 ## Explicit limits
 

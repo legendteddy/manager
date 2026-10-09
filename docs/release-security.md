@@ -6,7 +6,7 @@ This document records the release-security architecture without granting release
 
 A release candidate is identified by the SHA-256 of `candidate-manifest.json`. The manifest binds every payload file except itself. The payload in turn binds package artifacts, dependency wheelhouse, dependency lock, hash-locked requirements, SBOM, provenance, and the local in-toto statement.
 
-A reviewer may therefore record one candidate-manifest digest as the exact candidate fingerprint. The independent verifier recomputes that fingerprint and every transitive file hash before publication.
+A reviewer may therefore record one candidate-manifest digest as the exact candidate fingerprint. The independent verifier recomputes that fingerprint and every transitive file hash before publication. It also verifies semantic consistency across the dependency wheelhouse, structured lock, SBOM, Manager provenance and in-toto build predicate; a self-consistently rehashed but contradictory evidence bundle is rejected.
 
 ## Dependency model
 
@@ -14,11 +14,15 @@ Manager deliberately does not use one frozen environment for ordinary compatibil
 
 The resulting candidate contains the wheel bytes themselves, not only names and versions. Each wheel is hashed. `requirements.lock` is a deterministic rendering of the structured lock and is usable with pip `--require-hashes` and `--no-index`.
 
+The independent verifier requires the `dependencies/` wheelhouse to match the structured dependency lock exactly. An extra, missing, substituted or unhashed dependency payload fails verification even if the candidate manifest has been recomputed.
+
 This makes the candidate reconstructable even if a package index later changes, as long as the candidate bundle itself is retained and verified.
 
 ## SBOM
 
 The candidate contains deterministic CycloneDX 1.6 JSON. It records the exact release package identity, source commit, dependency-lock identity, package artifact hashes, and every resolved dependency wheel with version and SHA-256.
+
+The independent verifier compares the SBOM dependency components against the exact dependency lock, including dependency name, version, wheel filename and SHA-256. Omitting or substituting a component is a verification failure rather than merely a manifest-fingerprint change.
 
 No wall-clock generation time is used. The timestamp is derived from the source commit epoch so repeated verified builds can compare SBOM bytes.
 
@@ -30,6 +34,8 @@ The candidate contains two non-secret provenance records:
 - `provenance.intoto.jsonl`, an unsigned in-toto Statement using the SLSA provenance predicate shape.
 
 These records are evidence, not signatures.
+
+The independent verifier checks the in-toto artifact subjects plus the build type, project/version/commit/dependency-lock parameters, resolved source and lock identities, builder identity, invocation identity and SBOM byproduct identity. A stale or contradictory provenance predicate therefore fails even when all candidate files have been rehashed into a new manifest.
 
 The prepared publication workflow uses GitHub's keyless build-provenance attestation action after protected-environment approval. GitHub obtains a short-lived signing identity via OIDC/Sigstore. No long-lived signing private key is stored in the repository.
 
@@ -51,9 +57,17 @@ The variable is a second enablement gate, not a substitute for environment appro
 
 ## Required CI binding
 
-The publication workflow queries GitHub check runs and requires `public-safety = success` on the exact approved commit. The commit must also still equal current `main` both before environment review and immediately before publication.
+The publication workflow queries GitHub workflow runs and requires successful push runs for both `repository-integrity.yml` and `deployment-reference.yml` on the exact approved commit. The first workflow covers the supported Python matrix, repository/public-safety checks, deterministic behavioral tests, schema and release-candidate verification, dependency reconstruction and MCP attack lanes. The second supplies the documented deployment/container smoke gate, including non-root/read-only-root production configuration, authenticated service startup, readiness/API exercise and clean termination.
 
-This deliberately makes an approval stale if new work lands on `main` while a publication waits for review.
+Those exact-commit CI requirements are checked before protected-environment review and checked again immediately before publication. The commit must also still equal current `main` at both boundaries.
+
+This deliberately makes an approval stale if new work lands on `main` while a publication waits for review. Merge-time branch protection may enforce a subset of repository checks; the publication path independently enforces the complete release-specific pair above.
+
+## Workflow integrity
+
+Repository integrity scans every `.yml` and `.yaml` file under `.github/workflows/`, rather than a hand-maintained workflow allowlist. Every external `uses:` reference must be pinned to a 40-hex commit, and workflow-dispatch inputs may not be interpolated directly into shell script bodies.
+
+This prevents a newly added CI or release workflow from silently escaping the same action-pinning and dispatch-input safeguards applied to existing supply-chain workflows.
 
 ## Changelog and destination binding
 
@@ -69,6 +83,8 @@ A vulnerability result does not automatically rewrite dependency pins. Remediati
 
 ## Residual limits
 
-The machinery does not prove package indexes, GitHub, PyPI, Sigstore, or vulnerability feeds are universally trustworthy or available. It narrows trust by binding exact bytes and using short-lived identity, but platform compromise and account compromise remain external risks.
+The machinery does not prove package indexes, GitHub, PyPI, Sigstore, container registries, mutable reference-image tags, or vulnerability feeds are universally trustworthy or available. It narrows trust by binding exact package/dependency bytes and using short-lived publication identity, but platform compromise and account compromise remain external risks.
+
+The reference Dockerfile and Compose example intentionally remain operator-facing examples. Production/release builds must supply an organization-approved immutable Python base-image digest as documented by those files; the repository does not claim that the mutable convenience default is itself a release identity.
 
 A candidate-specific platform wheelhouse is not a universal cross-platform lock. Releasing artifacts built for a materially different platform or interpreter requires a separately verified lock/reproducibility policy.

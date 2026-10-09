@@ -93,7 +93,19 @@ class ReleaseCandidateSecurityTests(unittest.TestCase):
                     ],
                 }
             },
-            "components": [],
+            "components": [
+                {
+                    "type": "library",
+                    "bom-ref": "pkg:pypi/example-dep@1.2.3",
+                    "name": "example-dep",
+                    "version": "1.2.3",
+                    "purl": "pkg:pypi/example-dep@1.2.3",
+                    "hashes": [{"alg": "SHA-256", "content": digest(dep)}],
+                    "properties": [
+                        {"name": "manager:wheel-filename", "value": dep.name},
+                    ],
+                }
+            ],
         }
         (candidate / "sbom.cdx.json").write_text(
             json.dumps(sbom, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
@@ -124,33 +136,67 @@ class ReleaseCandidateSecurityTests(unittest.TestCase):
                 for path, value in sorted(artifact_hashes.items())
             ],
             "predicateType": "https://slsa.dev/provenance/v1",
-            "predicate": {},
+            "predicate": {
+                "buildDefinition": {
+                    "buildType": "https://github.com/legendteddy/manager/release-candidate/v1",
+                    "externalParameters": {
+                        "project": "manager-reference-runtime",
+                        "version": "0.10.0",
+                        "commit_sha": "a" * 40,
+                        "dependency_lock_sha256": lock_hash,
+                    },
+                    "internalParameters": {"source_date_epoch": 1},
+                    "resolvedDependencies": [
+                        {
+                            "uri": f"git+https://github.com/legendteddy/manager@{'a' * 40}",
+                            "digest": {"gitCommit": "a" * 40},
+                        },
+                        {
+                            "uri": "file:dependencies.lock.json",
+                            "digest": {"sha256": lock_hash},
+                        },
+                    ],
+                },
+                "runDetails": {
+                    "builder": {
+                        "id": "https://github.com/legendteddy/manager/scripts/build_release_candidate.py"
+                    },
+                    "metadata": {"invocationId": "a" * 40},
+                    "byproducts": [
+                        {"name": "sbom.cdx.json", "digest": {"sha256": sbom_hash}},
+                    ],
+                },
+            },
         }
         (candidate / "provenance.intoto.jsonl").write_text(
             json.dumps(statement, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
         )
 
-        payload = {}
-        for path in candidate.rglob("*"):
-            if path.is_file() and path.name != "candidate-manifest.json":
-                payload[path.relative_to(candidate).as_posix()] = digest(path)
-        manifest = {
-            "schema_version": "1.0",
-            "project": "manager-reference-runtime",
-            "version": "0.10.0",
-            "commit_sha": "a" * 40,
-            "dependency_lock_sha256": lock_hash,
-            "sbom_sha256": sbom_hash,
-            "files": [{"path": path, "sha256": value} for path, value in sorted(payload.items())],
-        }
-        (candidate / "candidate-manifest.json").write_text(
-            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
-        )
+        self.rebuild_manifest(candidate)
         return candidate, {
             "manifest": digest(candidate / "candidate-manifest.json"),
             "wheel": artifact_hashes[f"artifacts/{wheel.name}"],
             "sdist": artifact_hashes[f"artifacts/{sdist.name}"],
         }
+
+    def rebuild_manifest(self, candidate: Path) -> None:
+        manifest_path = candidate / "candidate-manifest.json"
+        manifest = {
+            "schema_version": "1.0",
+            "project": "manager-reference-runtime",
+            "version": "0.10.0",
+            "commit_sha": "a" * 40,
+            "dependency_lock_sha256": digest(candidate / "dependencies.lock.json"),
+            "sbom_sha256": digest(candidate / "sbom.cdx.json"),
+            "files": [
+                {"path": path.relative_to(candidate).as_posix(), "sha256": digest(path)}
+                for path in sorted(candidate.rglob("*"))
+                if path.is_file() and path.name != "candidate-manifest.json"
+            ],
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
+        )
 
     def test_valid_candidate_verifies(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -202,6 +248,15 @@ class ReleaseCandidateSecurityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checksum mismatch"):
                 verify_rc.verify_candidate(candidate)
 
+    def test_extra_dependency_is_rejected_even_if_manifest_is_rebound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate, _ = self.make_candidate(Path(tmp))
+            orphan = candidate / "dependencies" / "orphan-9.9.9-py3-none-any.whl"
+            orphan.write_bytes(b"orphan-dependency")
+            self.rebuild_manifest(candidate)
+            with self.assertRaisesRegex(ValueError, "dependency wheelhouse does not exactly match"):
+                verify_rc.verify_candidate(candidate)
+
     def test_missing_dependency_hash_is_rejected_even_if_manifest_is_rebound(self):
         with tempfile.TemporaryDirectory() as tmp:
             candidate, _ = self.make_candidate(Path(tmp))
@@ -219,6 +274,57 @@ class ReleaseCandidateSecurityTests(unittest.TestCase):
                 json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"
             )
             with self.assertRaisesRegex(ValueError, "dependency hash"):
+                verify_rc.verify_candidate(candidate)
+
+    def test_sbom_dependency_omission_is_rejected_after_consistent_rebinding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate, _ = self.make_candidate(Path(tmp))
+            sbom_path = candidate / "sbom.cdx.json"
+            sbom = json.loads(sbom_path.read_text(encoding="utf-8"))
+            sbom["components"] = []
+            sbom_path.write_text(json.dumps(sbom, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+            sbom_hash = digest(sbom_path)
+
+            provenance_path = candidate / "provenance.json"
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            provenance["sbom_sha256"] = sbom_hash
+            provenance_path.write_text(
+                json.dumps(provenance, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
+            statement_path = candidate / "provenance.intoto.jsonl"
+            statement = json.loads(statement_path.read_text(encoding="utf-8"))
+            statement["predicate"]["runDetails"]["byproducts"] = [
+                {"name": "sbom.cdx.json", "digest": {"sha256": sbom_hash}}
+            ]
+            statement_path.write_text(
+                json.dumps(statement, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            self.rebuild_manifest(candidate)
+
+            with self.assertRaisesRegex(ValueError, "SBOM dependency components"):
+                verify_rc.verify_candidate(candidate)
+
+    def test_stale_intoto_commit_is_rejected_even_if_manifest_is_rebound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate, _ = self.make_candidate(Path(tmp))
+            statement_path = candidate / "provenance.intoto.jsonl"
+            statement = json.loads(statement_path.read_text(encoding="utf-8"))
+            statement["predicate"]["buildDefinition"]["externalParameters"]["commit_sha"] = "b" * 40
+            statement["predicate"]["buildDefinition"]["resolvedDependencies"][0] = {
+                "uri": f"git+https://github.com/legendteddy/manager@{'b' * 40}",
+                "digest": {"gitCommit": "b" * 40},
+            }
+            statement["predicate"]["runDetails"]["metadata"] = {"invocationId": "b" * 40}
+            statement_path.write_text(
+                json.dumps(statement, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            self.rebuild_manifest(candidate)
+
+            with self.assertRaisesRegex(ValueError, "in-toto external parameters"):
                 verify_rc.verify_candidate(candidate)
 
     def test_changed_candidate_invalidates_prior_approval_fingerprint(self):
