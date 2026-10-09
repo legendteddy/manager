@@ -167,9 +167,11 @@ class ServiceAuthenticator:
             isinstance(capabilities, list)
             and self.config.required_capability in capabilities
         )
+        if not authorized:
+            return None
         return {
             "authenticated": True,
-            "authorized": authorized,
+            "authorized": True,
             "authentication_method": "jwt_hs256",
             **identity,
         }
