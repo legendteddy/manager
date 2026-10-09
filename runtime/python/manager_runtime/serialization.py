@@ -73,7 +73,8 @@ def _emit_string(value: str, writer: _BoundedWriter) -> None:
 
 
 def _key_text(value: Any) -> str:
-    if isinstance(value, str):
+    value_type = type(value)
+    if value_type is str:
         return value
     if value is None:
         return "null"
@@ -81,13 +82,13 @@ def _key_text(value: Any) -> str:
         return "true"
     if value is False:
         return "false"
-    if isinstance(value, int) and not isinstance(value, bool):
+    if value_type is int:
         if value.bit_length() <= _MAX_INTEGER_BITS:
             return str(value)
         return f"<int:{value.bit_length()}-bits>"
-    if isinstance(value, float):
+    if value_type is float:
         return json.dumps(value, allow_nan=True)
-    return f"<{type(value).__name__}>"
+    return f"<{value_type.__name__}>"
 
 
 def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> None:
@@ -98,6 +99,7 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
         writer.truncated = True
         return
 
+    value_type = type(value)
     if value is None:
         writer.append("null")
         return
@@ -107,23 +109,23 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
     if value is False:
         writer.append("false")
         return
-    if isinstance(value, str):
+    if value_type is str:
         _emit_string(value, writer)
         return
-    if isinstance(value, int) and not isinstance(value, bool):
+    if value_type is int:
         if value.bit_length() > _MAX_INTEGER_BITS:
             _emit_string(f"<int:{value.bit_length()}-bits>", writer)
         else:
             writer.append(str(value))
         return
-    if isinstance(value, float):
+    if value_type is float:
         writer.append(json.dumps(value, allow_nan=True))
         return
-    if isinstance(value, bytes):
+    if value_type is bytes:
         _emit_string(f"<bytes:{len(value)}>", writer)
         return
 
-    if isinstance(value, dict):
+    if value_type is dict:
         identity = id(value)
         if identity in seen:
             _emit_string("<cycle>", writer)
@@ -148,7 +150,7 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
             seen.remove(identity)
         return
 
-    if isinstance(value, (list, tuple)):
+    if value_type in {list, tuple}:
         identity = id(value)
         if identity in seen:
             _emit_string("<cycle>", writer)
@@ -170,10 +172,8 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
             seen.remove(identity)
         return
 
-    # Do not call arbitrary __str__ or __repr__ implementations here. Tool
-    # outputs are an untrusted resource boundary and such methods may allocate
-    # without bound, block, or expose sensitive implementation details.
-    _emit_string(f"<{type(value).__name__}>", writer)
+    # Avoid arbitrary collection/scalar subclass hooks, __str__, or __repr__.
+    _emit_string(f"<{value_type.__name__}>", writer)
 
 
 def bounded_json_text(value: Any, max_chars: int) -> str:
@@ -183,7 +183,7 @@ def bounded_json_text(value: Any, max_chars: int) -> str:
     intentionally a model-context preview, not a canonical serializer or a
     replacement for persistence formats.
     """
-    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars < 1:
+    if type(max_chars) is not int or max_chars < 1:
         raise ValueError("max_chars must be a positive integer")
     writer = _BoundedWriter(max_chars)
     _emit(value, writer, set(), 0)
