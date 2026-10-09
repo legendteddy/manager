@@ -3,17 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 # Mirrors Manager's documented local authority order. Lower is stronger.
+# `authoritative_state` represents truth owned by the relevant file/subsystem,
+# so it shares that tier with an owning subsystem rule.
 AUTHORITY_RANK = {
     "host_platform": 0,
     "maintainer_instruction": 1,
     "repository_governance": 2,
     "subsystem_rule": 3,
-    "authoritative_state": 4,
+    "authoritative_state": 3,
+    "current_verified_evidence": 4,
     "older_context": 5,
     "inferred_memory": 5,
 }
 EVIDENCE_ONLY_KINDS = {"external_content", "retrieved_content"}
 LOCAL_CONSTRAINT_KINDS = {"repository_governance", "subsystem_rule"}
+CONSTRAINT_SUPERSESSION_KINDS = {"host_platform", "maintainer_instruction"}
 
 
 def _event(status: str, summary: str, reference: str | None = None) -> dict[str, str]:
@@ -84,6 +88,30 @@ def _blocked(
 def _freshness(source: dict[str, Any]) -> int:
     value = source.get("freshness", 0)
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _explicit_supersessions(
+    task: dict[str, Any],
+    source: dict[str, Any],
+) -> set[str] | dict[str, Any]:
+    if "supersedes_constraints" not in source:
+        return set()
+
+    raw = source["supersedes_constraints"]
+    if not (
+        source["source_kind"] in CONSTRAINT_SUPERSESSION_KINDS
+        and isinstance(raw, list)
+        and all(isinstance(item, str) and item for item in raw)
+    ):
+        return _blocked(
+            task,
+            workflow="instruction_precedence",
+            status="invalid_constraint_supersession",
+            summary="Constraint supersession must be explicit, well formed, and issued by a higher authority.",
+            finding="Execution is blocked because local-constraint supersession is malformed or unauthorized.",
+            reference=source["source_id"],
+        )
+    return set(raw)
 
 
 def run_instruction_precedence(
@@ -229,16 +257,33 @@ def run_instruction_precedence(
         selected_id,
     ))
 
+    explicit_supersessions = _explicit_supersessions(task, selected)
+    if isinstance(explicit_supersessions, dict):
+        return explicit_supersessions
+
+    preserved_constraints: list[str] = []
+    superseded_constraints: list[str] = []
     for source_id in local_constraints:
-        events.append(_event(
-            "local_constraint_preserved",
-            "Stricter repository-local governance remained binding.",
-            source_id,
-        ))
+        if source_id in explicit_supersessions:
+            superseded_constraints.append(source_id)
+            events.append(_event(
+                "local_constraint_superseded",
+                "A higher authorized instruction explicitly superseded this lower local constraint.",
+                source_id,
+            ))
+        else:
+            preserved_constraints.append(source_id)
+            events.append(_event(
+                "local_constraint_preserved",
+                "Stricter repository-local governance remained binding absent explicit higher-authority supersession.",
+                source_id,
+            ))
 
     finding = f"Selected authority source {selected_id} for scope {target_scope}."
-    if local_constraints:
-        finding += " Preserved local constraints: " + ", ".join(local_constraints) + "."
+    if preserved_constraints:
+        finding += " Preserved local constraints: " + ", ".join(preserved_constraints) + "."
+    if superseded_constraints:
+        finding += " Explicitly superseded local constraints: " + ", ".join(superseded_constraints) + "."
 
     return _output(
         task,
