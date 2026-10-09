@@ -10,7 +10,6 @@ import sys
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Mapping
@@ -21,6 +20,7 @@ from ..deployment.config import DeploymentConfig, load_deployment_config
 from ..engine import run as run_control_plane
 from ..security import MountedFileSecretProvider, SecurityBoundaryError
 from ..state import SQLiteRunStore
+from .worker_pool import BoundedDaemonWorkerPool
 
 _SERVICE_PREFIX = "MANAGER_SERVICE_"
 _ALLOWED_SERVICE_ENV = {
@@ -274,10 +274,13 @@ class _BoundedHTTPServer(HTTPServer):
         self.context = context
         worker_count = context.config.max_concurrency + 2
         queue_limit = context.config.queue_limit
-        self.request_queue_size = max(5, min(worker_count + queue_limit, 1024))
-        self._slots = threading.BoundedSemaphore(worker_count + queue_limit)
-        self._executor = ThreadPoolExecutor(
+        slot_count = worker_count + queue_limit
+        self.request_queue_size = max(5, min(slot_count, 1024))
+        self._slots = threading.BoundedSemaphore(slot_count)
+        self._executor = BoundedDaemonWorkerPool(
             max_workers=worker_count,
+            max_pending=slot_count,
+            shutdown_timeout_seconds=context.config.graceful_shutdown_seconds,
             thread_name_prefix="manager-http",
         )
         super().__init__(server_address, handler, bind_and_activate=True)
@@ -322,7 +325,7 @@ class _BoundedHTTPServer(HTTPServer):
         try:
             super().server_close()
         finally:
-            self._executor.shutdown(wait=True, cancel_futures=False)
+            self._executor.shutdown(wait=True)
 
 
 class _Handler(BaseHTTPRequestHandler):
