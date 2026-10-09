@@ -183,6 +183,22 @@ class RuntimeIntegrationBoundaryTests(unittest.TestCase):
         self.assertEqual("failed", result["status"])
         self.assertEqual("invalid_tool_output", result["decision_reason"])
 
+    def test_native_tool_rejects_output_beyond_resource_limit(self) -> None:
+        registry = ToolRegistry()
+        tool = OutputTool(list(range(10_001)))
+        registry.register(definition(), tool)
+        result = execute_tool_request(
+            task(),
+            request(),
+            registry,
+            {"scope_authorized": True},
+        )
+        self.assertEqual("failed", result["status"])
+        self.assertEqual("invalid_tool_output", result["decision_reason"])
+        self.assertEqual("unverified", result["verification"]["status"])
+        self.assertNotIn("output", result)
+        self.assertEqual(1, tool.calls)
+
     def test_native_tool_result_is_detached_from_adapter_state(self) -> None:
         original = {"items": [{"value": "before"}]}
         registry = ToolRegistry()
