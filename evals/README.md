@@ -51,9 +51,15 @@ The executable deterministic fixture set currently covers:
 17. older context remains usable only as the lowest-precedence applicable context;
 18. precedence context cannot bypass the material-approval gate;
 19. precedence context cannot erase untrusted-content handling;
-20. precedence context cannot erase private-to-public safety handling.
+20. precedence context cannot erase private-to-public safety handling;
+21. current verified evidence outranks stale remembered context;
+22. owning subsystem/current authoritative truth outranks general current verified evidence;
+23. a higher authorized maintainer instruction may explicitly supersede a named lower local constraint;
+24. selecting a maintainer source does not silently erase a local constraint without explicit supersession.
 
-The precedence fixtures use a synthetic `prior_state.precedence_context` supplied by the eval harness. It represents application-owned source classification and context-loading state for deterministic testing only. It does not make repository text or retrieved content authoritative by itself, and it does not let older conversation or memory outrank current governance or state.
+The precedence fixtures use a synthetic `prior_state.precedence_context` supplied by the eval harness. It represents application-owned source classification and context-loading state for deterministic testing only. It does not make repository text or retrieved content authoritative by itself, and it does not let older conversation or memory outrank current governance, owning truth, or current verified evidence.
+
+The modeled order follows `AGENTS.md`: host/platform controls, newest explicit maintainer instruction, repository governance/security, owning file/subsystem truth, current verified evidence, then older conversation/documentation/remembered context. External or retrieved content remains evidence rather than authority. An explicit higher-authority source may name lower local constraints it deliberately supersedes; otherwise local constraints are preserved rather than silently discarded.
 
 Baseline Manager controls run before the precedence oracle. Precedence evaluation is eligible only after the base control plane has produced a completed public direct path with no untrusted-content input, so it cannot replace approval, specialist/reconciliation routing, prompt-injection handling, or privacy gates.
 
