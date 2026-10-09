@@ -14,7 +14,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Type
 
-from manager_runtime.mcp import MCPBoundaryError, OfficialMCPClient, register_mcp_bindings
+from manager_runtime.mcp import (
+    MCPBoundaryError,
+    MCPNetworkPolicy,
+    OfficialMCPClient,
+    register_mcp_bindings,
+)
 from manager_runtime.tools import ToolRegistry, execute_tool_request
 
 MCP_AVAILABLE = (
@@ -22,6 +27,10 @@ MCP_AVAILABLE = (
     and importlib.util.find_spec("uvicorn") is not None
 )
 SERVER = Path(__file__).parent / "fixtures" / "synthetic_mcp_http_server.py"
+LOCAL_MCP_NETWORK_POLICY = MCPNetworkPolicy(
+    allow_loopback=True,
+    allow_plain_http_loopback=True,
+)
 
 
 def echo_schema() -> dict:
@@ -231,6 +240,7 @@ class MCPStreamableHTTPConformanceTests(unittest.TestCase):
             "synthetic-http",
             self.url,
             operation_timeout_seconds=timeout,
+            network_policy=LOCAL_MCP_NETWORK_POLICY,
         )
 
     def test_official_sdk_streamable_http_discovery_and_result_normalization(self) -> None:
@@ -324,6 +334,7 @@ class MCPStreamableHTTPConformanceTests(unittest.TestCase):
             "synthetic-http",
             f"http://127.0.0.1:{self.port}/redirect-mcp",
             operation_timeout_seconds=3.0,
+            network_policy=LOCAL_MCP_NETWORK_POLICY,
         )
         names = {item["name"] for item in redirected.list_tools()}
         self.assertIn("echo", names)
@@ -339,6 +350,7 @@ class MCPStreamableHTTPConformanceTests(unittest.TestCase):
                 "redirect-stub",
                 stub.url,
                 operation_timeout_seconds=3.0,
+                network_policy=LOCAL_MCP_NETWORK_POLICY,
             )
             with self.assertRaisesRegex(MCPBoundaryError, "MCPError"):
                 client.list_tools()
@@ -373,6 +385,7 @@ class MCPStreamableHTTPConformanceTests(unittest.TestCase):
                 "malformed-stub",
                 stub.url,
                 operation_timeout_seconds=3.0,
+                network_policy=LOCAL_MCP_NETWORK_POLICY,
             )
             with self.assertRaises(MCPBoundaryError):
                 client.list_tools()
