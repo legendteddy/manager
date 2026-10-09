@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
 
 from . import gateway as _gateway
 from .api import ApiError
+
+_ORIGINAL_CREATE_GATEWAY_SERVER = _gateway.create_gateway_server
 
 
 class HardenedGatewayHandler(_gateway._Handler):
@@ -48,6 +50,22 @@ class HardenedGatewayHandler(_gateway._Handler):
                 "request method does not accept a body",
                 status=400,
             )
+
+    def _read_json(self):
+        # Reject alternate decimal spellings before the base parser reads body
+        # bytes. Ambiguous framing values should not be normalized differently
+        # by a proxy and this HTTP server.
+        lengths = self.headers.get_all("Content-Length") or []
+        if len(lengths) == 1:
+            raw = lengths[0]
+            if raw.isascii() and raw.isdigit() and len(raw) > 1 and raw.startswith("0"):
+                self.close_connection = True
+                raise ApiError(
+                    "invalid_content_length",
+                    "Content-Length must use canonical decimal form",
+                    status=400,
+                )
+        return super()._read_json()
 
     def _subject(self) -> str:
         values = self.headers.get_all("Authorization") or []
@@ -102,8 +120,28 @@ class HardenedGatewayHandler(_gateway._Handler):
         super()._method_not_allowed()
 
 
+def hardened_create_gateway_server(config, settings, backend, **kwargs):
+    """Re-assert production invariants for direct library construction."""
+
+    if config.environment in {"staging", "production"}:
+        if settings.auth_mode != "bearer":
+            raise _gateway.GatewayConfigError(
+                f"{config.environment} service authentication must use bearer mode"
+            )
+        if not Path(settings.idempotency_path).is_absolute():
+            raise _gateway.GatewayConfigError(
+                "production idempotency path must be absolute"
+            )
+        # `run_service` validates paths already, but direct callers must not be
+        # able to bypass the same deployment filesystem/TLS contract.
+        _gateway.validate_runtime_paths(config)
+    return _ORIGINAL_CREATE_GATEWAY_SERVER(config, settings, backend, **kwargs)
+
+
 def install_http_policy() -> None:
     """Install once after the gateway module is loaded by the package."""
 
     if _gateway._Handler is not HardenedGatewayHandler:
         _gateway._Handler = HardenedGatewayHandler
+    if _gateway.create_gateway_server is not hardened_create_gateway_server:
+        _gateway.create_gateway_server = hardened_create_gateway_server
