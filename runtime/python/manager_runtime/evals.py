@@ -87,20 +87,21 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
     task = case_input["task"]
     prior_state = case_input.get("prior_state") or {}
 
-    # Baseline Manager controls always run first. The precedence oracle may only
-    # refine an otherwise-completed public direct path; it cannot replace approval,
-    # specialist/reconciliation routing, prompt-injection handling, or privacy gates.
+    # Baseline Manager controls always run first. The precedence oracle is only
+    # eligible on an otherwise-completed public direct path; it cannot replace
+    # approval, specialist/reconciliation routing, injection handling, or privacy.
     outputs = run(case_input)
-    precedence_outputs = run_instruction_precedence(task, prior_state)
     baseline_trace = outputs["trace"]
-    if (
-        precedence_outputs is not None
-        and baseline_trace["status"] == "completed"
+    precedence_eligible = (
+        baseline_trace["status"] == "completed"
         and baseline_trace["workflow"] == "direct"
         and not case_input.get("untrusted_content")
         and task["classification"].get("sensitivity", "unknown") == "public"
-    ):
-        outputs = precedence_outputs
+    )
+    if precedence_eligible:
+        precedence_outputs = run_instruction_precedence(task, prior_state)
+        if precedence_outputs is not None:
+            outputs = precedence_outputs
 
     checks = [check_assertion(outputs, item) for item in case["deterministic_assertions"]]
     return {
