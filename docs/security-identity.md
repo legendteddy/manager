@@ -69,6 +69,8 @@ The authorization decision binds:
 
 Policy rules are application-owned data. A rule grants a named capability only when action, resource, environment, and side-effect class all match. An approval cannot override a denied capability.
 
+For consequential approvals, the tool runtime strengthens the base authorization decision with a canonical digest of the actual security-policy fields consumed by authorization. This includes the policy rules themselves, not only the application-managed revision label. Therefore a same-revision policy mutation that still permits the current action nevertheless makes an existing approval stale. This is intentionally conservative: human approval remains bound to the authority state that was actually reviewed rather than trusting revision bookkeeping as the sole change detector.
+
 For compatibility, callers that supply neither security envelope continue to use the earlier coarse authorization flags. Production embeddings can set `require_security_context=true` to fail closed when the strict envelope is absent. Removing the legacy compatibility path for every caller would change the public trust/compatibility model and requires an explicit maintainer decision rather than an implicit security-worker policy change.
 
 ### Current-principal revalidation
@@ -77,11 +79,13 @@ A strict `security_context` may include an application-owned `principal_revalida
 
 The callback receives only normalized, non-secret principal facts. Callback failures fail closed and do not expose the backend exception message. The deployment still owns the revocation source, freshness, availability, and emergency-revocation policy.
 
+Consequential approval binding records whether live principal revalidation was active. Removing the callback therefore invalidates an existing approval. Embeddings may also provide a non-empty `principal_revalidator_revision` string alongside the callback. That stable, application-owned label is included in the approval binding so changing the revocation/currentness backend or its security semantics can explicitly stale prior approvals. A revalidator revision without a revalidator is rejected as an invalid security context. If an embedding replaces a callback without changing this optional revision, Manager cannot infer that the implementation changed; deployments should advance the revision whenever the revalidation authority or semantics change.
+
 ## Approval and restart safety
 
-When strict authorization is active, consequential approval packets place a digest of the current authorization decision in the existing `approval.extensions.security` namespace.
+When strict authorization is active, consequential approval packets place a digest of the current authorization state in the existing `approval.extensions.security` namespace.
 
-On execution the runtime re-evaluates the current security envelope and compares it with that binding. A changed principal, capability set, token lifetime/identifier, environment, policy revision, resource, action, or side-effect class makes the old approval stale.
+On execution the runtime re-evaluates the current security envelope and compares it with that binding. A changed principal, capability set, token lifetime/identifier, environment, policy revision, policy rules/authorization constraints, resource, action, side-effect class, principal-revalidation presence, or supplied principal-revalidator revision makes the old approval stale.
 
 Durable checkpoints do not serialize tokens, security-policy objects, revocation callbacks, or secret material. The existing durable loop persists the approval binding but its authorization-context snapshot intentionally retains only coarse non-secret booleans. A resumed consequential operation must receive fresh current security context from the embedding application before durable execution intent is recorded. The tool runtime then revalidates that current context and the approval binding again immediately before execution.
 
