@@ -35,6 +35,28 @@ def _context() -> dict:
             "repo:consumer-a": "rule-v1",
             "repo:consumer-b": "rule-v1",
         },
+        "authoritative_update": {
+            "target": "repo:canonical",
+            "status": "completed",
+            "evidence": "Synthetic authoritative update receipt.",
+        },
+        "propagation": [
+            {
+                "target": "repo:consumer-a",
+                "status": "completed",
+                "evidence": "Synthetic consumer-a propagation receipt.",
+            },
+            {
+                "target": "repo:consumer-b",
+                "status": "completed",
+                "evidence": "Synthetic consumer-b propagation receipt.",
+            },
+        ],
+        "verification": {
+            "status": "pass",
+            "details": "Synthetic post-action verification inspected all declared targets.",
+            "residual_discrepancies": [],
+        },
         "verified_states": {
             "repo:canonical": "rule-v2",
             "repo:consumer-a": "rule-v2",
@@ -66,6 +88,7 @@ class ReconciliationControlPlaneTests(unittest.TestCase):
         actions = outputs["reconciliation"]["actions"]
         self.assertEqual(actions[0]["target"], "repo:canonical")
         self.assertEqual(actions[0]["action_type"], "update_authority")
+        self.assertEqual(actions[0]["evidence"], "Synthetic authoritative update receipt.")
         propagated = [
             action["target"]
             for action in actions
@@ -184,6 +207,11 @@ class ReconciliationControlPlaneTests(unittest.TestCase):
         context["dependencies"] = ["repo:consumer-a"]
         context["inspected_dependencies"] = ["repo:consumer-a", "repo:consumer-c"]
         context["consumer_states"] = {"repo:consumer-a": "rule-v1"}
+        context["propagation"] = [context["propagation"][0]]
+        context["verified_states"] = {
+            "repo:canonical": "rule-v2",
+            "repo:consumer-a": "rule-v2",
+        }
         context["required_surfaces"] = {"repo:consumer-a": ["docs", "tests"]}
         context["reconciled_surfaces"] = {"repo:consumer-a": ["docs", "tests"]}
 
@@ -252,6 +280,65 @@ class ReconciliationControlPlaneTests(unittest.TestCase):
             if action["target"] == "repo:canonical" and action["action_type"] == "propagate"
         ]
         self.assertEqual(propagated_owner, [])
+
+    def test_converged_state_without_propagation_receipts_cannot_pass(self) -> None:
+        context = _context()
+        context.pop("propagation")
+
+        outputs = run(
+            {
+                "task": _task("reconcile-no-propagation-receipts"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        residual = outputs["reconciliation"]["verification"]["residual_discrepancies"]
+        self.assertEqual(outputs["trace"]["status"], "blocked")
+        self.assertEqual(outputs["reconciliation"]["verification"]["status"], "fail")
+        self.assertIn(
+            "Propagation for repo:consumer-a lacks explicit completed action evidence.",
+            residual,
+        )
+        self.assertIn(
+            "Propagation for repo:consumer-b lacks explicit completed action evidence.",
+            residual,
+        )
+
+    def test_converged_owner_state_without_authoritative_update_receipt_cannot_pass(self) -> None:
+        context = _context()
+        context["owner_state"] = "rule-v1"
+        context.pop("authoritative_update")
+
+        outputs = run(
+            {
+                "task": _task("reconcile-no-owner-update-receipt"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        residual = outputs["reconciliation"]["verification"]["residual_discrepancies"]
+        self.assertEqual(outputs["reconciliation"]["verification"]["status"], "fail")
+        self.assertIn(
+            "Authoritative update for repo:canonical lacks explicit completed action evidence.",
+            residual,
+        )
+
+    def test_final_state_without_explicit_consistency_verification_cannot_pass(self) -> None:
+        context = _context()
+        context.pop("verification")
+
+        outputs = run(
+            {
+                "task": _task("reconcile-no-final-verification"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        self.assertEqual(outputs["reconciliation"]["verification"]["status"], "fail")
+        self.assertIn(
+            "Final consistency verification lacks explicit passing evidence.",
+            outputs["reconciliation"]["verification"]["residual_discrepancies"],
+        )
 
     def test_keyword_only_reconciliation_no_longer_fabricates_pass(self) -> None:
         outputs = run({"task": _task("reconcile-no-evidence")})
