@@ -361,13 +361,21 @@ class _Handler(BaseHTTPRequestHandler):
         request_id: str,
         extra_headers: Mapping[str, str] | None = None,
     ) -> None:
-        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+        raw = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Request-ID", request_id)
+        if self.close_connection:
+            self.send_header("Connection", "close")
         if extra_headers:
             for key, value in extra_headers.items():
                 self.send_header(key, value)
@@ -377,6 +385,22 @@ class _Handler(BaseHTTPRequestHandler):
                 self.wfile.write(raw)
             except OSError:
                 pass
+
+    def _reject_unread_body(
+        self,
+        status: int,
+        error: str,
+        *,
+        request_id: str,
+        extra_headers: Mapping[str, str] | None = None,
+    ) -> None:
+        self.close_connection = True
+        self._reply(
+            status,
+            {"ok": False, "error": error},
+            request_id=request_id,
+            extra_headers=extra_headers,
+        )
 
     def _health(self, *, readiness: bool) -> None:
         request_id = self._request_id()
@@ -404,52 +428,71 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if self.path != "/v1/run":
                 status = 404
-                self._reply(status, {"ok": False, "error": "not_found"}, request_id=request_id)
+                self._reject_unread_body(status, "not_found", request_id=request_id)
                 return
             if self.context.health.readiness().get("ok") is not True:
                 status = 503
-                self._reply(status, {"ok": False, "error": "not_ready"}, request_id=request_id)
+                self._reject_unread_body(status, "not_ready", request_id=request_id)
                 return
             if not self.context.authenticator.authorized(self.headers.get("Authorization")):
                 status = 401
-                self._reply(
+                self._reject_unread_body(
                     status,
-                    {"ok": False, "error": "unauthorized"},
+                    "unauthorized",
                     request_id=request_id,
                     extra_headers={"WWW-Authenticate": "Bearer"},
                 )
                 return
-            transfer_encoding = self.headers.get("Transfer-Encoding")
-            if transfer_encoding:
+            if self.headers.get_all("Transfer-Encoding"):
                 status = 400
-                self._reply(status, {"ok": False, "error": "unsupported_transfer_encoding"}, request_id=request_id)
+                self._reject_unread_body(
+                    status,
+                    "unsupported_transfer_encoding",
+                    request_id=request_id,
+                )
                 return
-            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            content_types = self.headers.get_all("Content-Type") or []
+            if len(content_types) != 1:
+                status = 415
+                self._reject_unread_body(
+                    status,
+                    "content_type_must_be_application_json",
+                    request_id=request_id,
+                )
+                return
+            content_type = content_types[0].split(";", 1)[0].strip().lower()
             if content_type != "application/json":
                 status = 415
-                self._reply(status, {"ok": False, "error": "content_type_must_be_application_json"}, request_id=request_id)
+                self._reject_unread_body(
+                    status,
+                    "content_type_must_be_application_json",
+                    request_id=request_id,
+                )
                 return
-            raw_length = self.headers.get("Content-Length")
-            if raw_length is None:
+            content_lengths = self.headers.get_all("Content-Length") or []
+            if not content_lengths:
                 status = 411
-                self._reply(status, {"ok": False, "error": "content_length_required"}, request_id=request_id)
+                self._reject_unread_body(status, "content_length_required", request_id=request_id)
                 return
-            try:
-                length = int(raw_length)
-            except ValueError:
-                length = -1
-            if length < 0:
+            raw_length = content_lengths[0]
+            if len(content_lengths) != 1 or re.fullmatch(r"[0-9]+", raw_length) is None:
                 status = 400
-                self._reply(status, {"ok": False, "error": "invalid_content_length"}, request_id=request_id)
+                self._reject_unread_body(status, "invalid_content_length", request_id=request_id)
                 return
+            length = int(raw_length)
             if length > self.context.settings.max_request_bytes:
                 status = 413
-                self._reply(status, {"ok": False, "error": "request_too_large"}, request_id=request_id)
+                self._reject_unread_body(status, "request_too_large", request_id=request_id)
                 return
             raw = self.rfile.read(length)
             if len(raw) != length:
                 status = 400
-                self._reply(status, {"ok": False, "error": "incomplete_request_body"}, request_id=request_id)
+                self.close_connection = True
+                self._reply(
+                    status,
+                    {"ok": False, "error": "incomplete_request_body"},
+                    request_id=request_id,
+                )
                 return
             try:
                 task_input = _validate_task_input(_decode_json(raw))
@@ -473,9 +516,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(status, {"ok": True, "output": output}, request_id=request_id)
         except (socket.timeout, TimeoutError):
             status = 408
-            self._reply(status, {"ok": False, "error": "request_timeout"}, request_id=request_id)
+            self.close_connection = True
+            try:
+                self._reply(status, {"ok": False, "error": "request_timeout"}, request_id=request_id)
+            except Exception:
+                pass
         except Exception as exc:
             status = 500
+            self.close_connection = True
             self.context.telemetry.event(
                 "http_request_failure",
                 request_id=request_id,
