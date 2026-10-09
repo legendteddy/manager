@@ -188,8 +188,17 @@ def validate_supply_chain_workflow(path: Path, failures: list[str]) -> None:
                     f"supply-chain workflow action must be pinned to a 40-hex commit: {label}:{index + 1}"
                 )
 
-        if directive not in {"run: |", "run: >", "run: |-", "run: >-"}:
+        if not directive.startswith("run:"):
             continue
+
+        run_value = directive.removeprefix("run:").lstrip()
+        if run_value not in {"|", ">", "|-", ">-"}:
+            if "${{ inputs." in run_value:
+                failures.append(
+                    f"workflow_dispatch inputs must enter shell through env, not expression interpolation: {label}:{index + 1}"
+                )
+            continue
+
         base_indent = len(line) - len(line.lstrip())
         block_lines: list[str] = []
         for candidate in lines[index + 1 :]:
