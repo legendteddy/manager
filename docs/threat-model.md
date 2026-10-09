@@ -8,6 +8,8 @@ Manager aims to preserve:
 
 - **authority integrity**: untrusted content, models, tools, and remote servers cannot silently expand their authority;
 - **approval integrity**: consequential actions execute only against the exact approved action, target, arguments, and current authority state;
+- **identity integrity**: authenticated caller/service identity remains explicit and authentication cannot silently become Manager authorization;
+- **credential integrity**: secret material remains externally injected and outside canonical contracts and durable state;
 - **state integrity**: durable state cannot silently resurrect stale or uncertain work;
 - **public/private separation**: private operational data is not promoted into the public framework by default;
 - **execution integrity**: tool and MCP calls remain behind application-owned policy, verification, and recovery controls;
@@ -18,11 +20,17 @@ Manager aims to preserve:
 
 ### Human principal / maintainer
 
-Human instructions may authorize actions within the surrounding product's authority model. Human approval can still be mistaken, stale, socially engineered, or bound to incomplete information, so exact action binding and revalidation remain necessary.
+Human instructions may authorize actions within the surrounding product's authority model. Human approval can still be mistaken, stale, socially engineered, or bound to incomplete information, so exact action binding and revalidation remain necessary. Approval is not authorization.
+
+### API caller / service ingress
+
+The HTTP service is an authentication boundary, not a source of Manager tool authority. Compatibility bearer mode proves possession of one application-owned API secret. Strict reference JWT mode validates signature, issuer, audience, validity window, subject and token identity, fixes the expected principal type at the service configuration boundary, and separately requires the `manager.run` capability before the run route is accepted. Multiple `Authorization` headers are rejected as ambiguous. Authenticated caller claims are not copied into `task.authority` or model-visible input.
+
+The reference JWT service mode intentionally demonstrates HS256 only. Production deployments may use asymmetric OIDC/JWT, workload identity, mTLS identities, an identity-aware proxy, or another mechanism, but must preserve equivalent identity/capability and network-trust checks.
 
 ### Model provider
 
-Model output is untrusted proposal content. A model may propose text or tool actions but does not own side-effect class, authorization, approval, verification, state ownership, or recovery decisions.
+Model output is untrusted proposal content. A model may propose text or tool actions but does not own side-effect class, authorization, approval, verification, state ownership, recovery decisions, identity, or credential material.
 
 ### Retrieved and external content
 
@@ -36,9 +44,17 @@ Tool implementations may fail, return misleading data, partially execute, or pro
 
 MCP discovery metadata and results are untrusted. Remote descriptions and annotations do not define Manager policy. Server identity, exact tool presence, and reviewed schema are revalidated before execution in the reference adapter.
 
+### Credential and secret providers
+
+Secret acquisition is an external-injection boundary. Manager's reference secret-provider abstractions reacquire credential material on demand so rotation need not promote a secret into canonical state. Secret values must not enter model input, public traces, durable checkpoints, or repository fixtures.
+
+### Network and trusted proxy boundary
+
+Transport security is deployment-owned. Manager provides strict network-policy integration points and the direct service TLS profile enforces TLS 1.2 or newer, but production CA roots, mTLS identities, ingress/proxy topology, certificate lifecycle, OAuth, DNS, and enterprise egress remain environment-specific responsibilities.
+
 ### Durable state store
 
-Persisted state may be stale, malformed, corrupted, or restored from an unexpected point. Loaded state is validated before it can drive execution. The SQLite reference adapter is not an encryption or distributed-consensus boundary.
+Persisted state may be stale, malformed, corrupted, or restored from an unexpected point. Loaded state is validated before it can drive execution. The SQLite reference adapter is not an encryption or distributed-consensus boundary. Raw credentials and bearer tokens are not durable authority.
 
 ### Repository and CI
 
@@ -50,15 +66,16 @@ Future package indexes, release artifacts, containers, or other distribution mec
 
 ## Threats and current mitigations
 
-| Threat | Current mitigation | Residual risk |
+| Threat | Implemented / tested protection | Deployment assumption / residual risk |
 | --- | --- | --- |
 | Prompt injection changes authority | External content is treated as data; policy fields are application-owned; deterministic gates enforce critical constraints. | A privileged application can still pass unsafe authority or expose excessive tools. |
+| API caller impersonation or authentication/authorization collapse | Service bearer compatibility mode uses an externally injected rotating secret. Strict JWT mode validates signature/issuer/audience/time/JTI and separately requires `manager.run`; duplicate `Authorization` headers fail closed; regression tests exercise valid identity, wrong issuer/audience, expiry, signature tampering, missing capability, duplicate headers, and material-action governance. | Key distribution, asymmetric/workload verifier selection, revocation/currentness, account lifecycle, and external identity-provider security are deployment responsibilities. Static bearer mode has no per-caller identity. |
 | Model fabricates or widens tool permission | Trusted `ToolRegistry` owns side-effect metadata, allowed tools, and verification requirements. | Incorrect registry configuration remains trusted application error. |
-| Stale approval is replayed | Approval fingerprints bind action, target, arguments, and tool definition; resume revalidates current authority. | Human approval may still be based on incomplete or misleading context. |
+| Stale approval is replayed | Approval fingerprints bind action, target, arguments, tool definition, and strict authorization state where configured; resume revalidates current authority. | Human approval may still be based on incomplete or misleading context; embedding applications must advance live-revalidator revision when its semantics change. |
 | Process crashes during consequential execution | Durable state records execution intent; uncertain outcomes enter `recovery_required` rather than automatic retry. | Exactly-once external effects are not guaranteed. |
 | Persisted state is corrupted or incompatible | State shape, legal transitions, revisions, and checkpoint versions are validated; future unknown versions fail closed. | Storage confidentiality, availability, and host compromise are outside the SQLite reference guarantee. |
 | MCP tool changes after registration | Remote server identity, exact tool presence, and schema fingerprint are rechecked before execution. | A malicious server can preserve schema while changing semantics. Independent verification is still needed for consequential effects. |
-| Cross-origin HTTP redirect leaks trust context | Tested Streamable HTTP path rejects cross-origin redirects and normalizes the failure at Manager's boundary. | Production proxy, TLS, certificate, OAuth, and enterprise egress policies are not established. |
+| Cross-origin HTTP redirect leaks trust context | Tested Streamable HTTP path rejects cross-origin redirects and normalizes the failure at Manager's boundary. | Production proxy, TLS, certificate, OAuth, and enterprise egress policies are deployment-specific. |
 | Malformed or hostile remote response | SDK/protocol failures are normalized and tested malformed responses fail closed. | Transport fuzzing and hostile-wire robustness are not comprehensive. |
 | Sensitive tool output reaches model or trace | Sensitive outputs can be withheld from continuation; public traces must minimize sensitive content. | Correct sensitivity classification remains an application responsibility. |
 | Secret or private data is committed publicly | Public/private policy plus repository-integrity scanning for high-confidence secret, risky filename, email, contract, and fixture patterns. | Pattern scanning is incomplete and cannot prove absence of secrets or proprietary context. |
@@ -66,20 +83,20 @@ Future package indexes, release artifacts, containers, or other distribution mec
 | CI token is abused | Workflow requests `contents: read` only and uses shell/git rather than broad write permissions. | Hosted runner and dependency-install compromise remain outside this control. |
 | Dependency update silently changes behavior | Version ranges are bounded by major versions and transport behavior is tested in CI. | CI is not fully locked or hashed, so an allowed dependency release can change the environment. |
 | Published artifact differs from reviewed source | No publication workflow exists, so no release is claimed. Release policy requires exact commit/artifact binding before future publication. | Artifact provenance, signing, SBOM, and trusted publishing remain future work. |
-| Denial of service or unbounded loop | Agent loops have explicit model/tool/result budgets; MCP operations can use timeouts. | Host-level CPU, memory, network exhaustion, and adversarial workload limits are not comprehensively modeled. |
+| Denial of service or unbounded loop | Agent loops have explicit model/tool/result budgets; MCP operations can use timeouts; service request workers and admission are bounded. | Host-level CPU, memory, network exhaustion, and adversarial workload limits are not comprehensively modeled. |
 
 ## Consequential assumptions
 
 The reference runtime assumes the embedding application correctly supplies:
 
-- authenticated human identity where identity matters;
-- current authorization scope;
+- authenticated human/API/workload identity where identity matters;
+- current authorization scope/capabilities and revocation/currentness decisions;
 - verified target information when required;
 - trusted local tool metadata and implementations;
 - an appropriate verifier for consequential effects;
 - secure credential and secret storage outside Manager contracts;
 - appropriate filesystem/database protection for durable state;
-- network, TLS, proxy, OAuth, and certificate policy for production transports;
+- network, TLS, proxy, OAuth, DNS, and certificate policy for production transports;
 - operational monitoring and incident response appropriate to the deployment.
 
 Manager cannot recover guarantees that the embedding application does not provide.
@@ -88,8 +105,9 @@ Manager cannot recover guarantees that the embedding application does not provid
 
 The current evidence does not prove:
 
-- resistance to a compromised host, CI runner, maintainer account, dependency, or model provider;
-- production OAuth, credential, TLS/mTLS, proxy, or certificate safety;
+- resistance to a compromised host, CI runner, maintainer account, dependency, identity provider, or model provider;
+- production OAuth, credential, TLS/mTLS, proxy, DNS, or certificate lifecycle safety;
+- production safety of the reference HS256 service mode for every identity topology;
 - operating-system or container sandbox isolation;
 - arbitrary MCP-server trustworthiness;
 - semantic equivalence when a remote server keeps the same schema but changes behavior;
@@ -106,7 +124,7 @@ Revisit this threat model when a change introduces or materially changes:
 
 - a new external transport or provider;
 - provider-managed tool execution;
-- authentication or credential storage;
+- authentication, API caller identity, authorization, or credential storage;
 - public package/container publishing;
 - a new durable-state backend;
 - distributed execution or locking;
