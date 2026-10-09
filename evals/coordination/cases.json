@@ -1,0 +1,14 @@
+[
+  {"case_id":"overlapping-write-set-rejected","expected":{"valid":false,"codes":["WRITE_SET_CONFLICT"]}},
+  {"case_id":"silent-scope-expansion-rejected","expected":{"valid":false,"codes":["OUT_OF_SCOPE_CHANGE"]}},
+  {"case_id":"shared-hotspot-without-sequencing-rejected","expected":{"valid":false,"codes":["HOTSPOT_UNCOORDINATED"]}},
+  {"case_id":"sequenced-shared-hotspot-accepted","expected":{"valid":true,"codes":[]}},
+  {"case_id":"unfinished-blocking-dependency-rejected","expected":{"valid":false,"codes":["BLOCKING_DEPENDENCY_UNRESOLVED"]}},
+  {"case_id":"stale-base-without-disposition-rejected","expected":{"valid":false,"codes":["STALE_BASE_UNRECONCILED"]}},
+  {"case_id":"advanced-pr-state-rejected","expected":{"valid":false,"codes":["PR_HEAD_STALE"]}},
+  {"case_id":"global-mission-mismatch-rejected","expected":{"valid":false,"codes":["MISSION_MISMATCH"]}},
+  {"case_id":"lost-out-of-scope-finding-rejected","expected":{"valid":false,"codes":["OUT_OF_SCOPE_HANDOFF_INVALID"]}},
+  {"case_id":"completion-without-test-evidence-rejected","expected":{"valid":false,"codes":["TEST_EVIDENCE_MISSING"]}},
+  {"case_id":"insufficient-integrator-selection-packet-rejected","expected":{"valid":false,"codes":["INTEGRATOR_PACKET_INCOMPLETE"]}},
+  {"case_id":"complete-handoff-accepted","expected":{"valid":true,"codes":[]}}
+]
