@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Fail-closed structural checks for durable parallel-worker coordination.
 
-This helper detects coordination hazards. It never assigns authority, approves scope,
-or selects an implementation.
+This validator detects coordination hazards. It does not assign authority, approve
+scope, or select implementations.
 """
 from __future__ import annotations
 
@@ -15,19 +15,20 @@ from typing import Any
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 ACTIVE = {"declared", "active", "blocked", "ready_for_handoff"}
-CLAIM_STATUS = ACTIVE | {"superseded", "withdrawn"}
+HISTORICAL = {"superseded", "withdrawn"}
+CLAIM_STATUS = ACTIVE | HISTORICAL
 DEP_STATUS = {"pending", "ready", "consumed", "superseded"}
 HOTSPOT_MODE = {"exclusive", "sequenced", "integrator_only", "intentional_verification"}
 STALE_DISPOSITION = {"unrelated_reviewed", "rebase_required", "integrator_sequence", "superseded"}
 HANDOFF_STATUS = {"blocked", "no_change", "ready_for_integration"}
 
 
-def _text(v: Any) -> bool:
-    return isinstance(v, str) and bool(v.strip())
+def _text(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
-def _strings(v: Any, *, nonempty: bool = False) -> bool:
-    return isinstance(v, list) and (not nonempty or bool(v)) and all(_text(x) for x in v)
+def _strings(value: Any, *, nonempty: bool = False) -> bool:
+    return isinstance(value, list) and (not nonempty or bool(value)) and all(_text(x) for x in value)
 
 
 def _path(spec: str) -> tuple[str, bool]:
@@ -38,15 +39,15 @@ def _path(spec: str) -> tuple[str, bool]:
     return value.rstrip("/"), prefix
 
 
-def _overlap(a: str, b: str) -> bool:
-    ap, apre = _path(a)
-    bp, bpre = _path(b)
+def _overlap(left: str, right: str) -> bool:
+    lp, lprefix = _path(left)
+    rp, rprefix = _path(right)
     return (
-        not ap
-        or not bp
-        or ap == bp
-        or (apre and bp.startswith(ap + "/"))
-        or (bpre and ap.startswith(bp + "/"))
+        not lp
+        or not rp
+        or lp == rp
+        or (lprefix and rp.startswith(lp + "/"))
+        or (rprefix and lp.startswith(rp + "/"))
     )
 
 
@@ -63,13 +64,80 @@ def _finding(code: str, message: str, *workers: str) -> dict[str, Any]:
     return {"code": code, "message": message, "workers": list(workers)}
 
 
-def _deps_link(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    pair = {a.get("worker_id"), b.get("worker_id")}
-    for claim in (a, b):
-        for dep in claim.get("dependencies", []):
-            if isinstance(dep, dict) and {dep.get("producer_worker"), dep.get("consumer_worker")} == pair:
-                return True
-    return False
+def _deps_link(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    pair = {left.get("worker_id"), right.get("worker_id")}
+    return any(
+        isinstance(dep, dict)
+        and {dep.get("producer_worker"), dep.get("consumer_worker")} == pair
+        for claim in (left, right)
+        for dep in claim.get("dependencies", [])
+    )
+
+
+def _resolve_current_claims(
+    claims: list[dict[str, Any]], findings: list[dict[str, Any]]
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Resolve current claims without trusting serialized list order."""
+    histories: dict[str, list[dict[str, Any]]] = {}
+    invalid: set[str] = set()
+    for claim in claims:
+        worker = claim.get("worker_id")
+        if not _text(worker):
+            continue
+        worker = str(worker)
+        histories.setdefault(worker, []).append(claim)
+        revision = claim.get("claim_revision")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            invalid.add(worker)
+        if claim.get("status") not in CLAIM_STATUS:
+            invalid.add(worker)
+
+    current_by_worker: dict[str, dict[str, Any]] = {}
+    for worker, history in histories.items():
+        by_revision: dict[int, dict[str, Any]] = {}
+        for claim in history:
+            revision = claim.get("claim_revision")
+            if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+                continue
+            if revision in by_revision:
+                findings.append(
+                    _finding(
+                        "CLAIM_REVISION_DUPLICATE",
+                        f"{worker}: duplicate claim revision {revision}",
+                        worker,
+                    )
+                )
+                invalid.add(worker)
+            else:
+                by_revision[revision] = claim
+
+        current = [claim for claim in history if claim.get("status") in ACTIVE]
+        if len(current) > 1:
+            findings.append(
+                _finding(
+                    "MULTIPLE_CURRENT_CLAIMS",
+                    f"{worker}: multiple simultaneous current claims",
+                    worker,
+                )
+            )
+            invalid.add(worker)
+        elif len(current) == 1 and by_revision:
+            current_revision = current[0].get("claim_revision")
+            highest_revision = max(by_revision)
+            if current_revision != highest_revision:
+                findings.append(
+                    _finding(
+                        "CLAIM_CURRENT_NOT_HIGHEST",
+                        f"{worker}: current revision {current_revision!r} is not highest revision {highest_revision}",
+                        worker,
+                    )
+                )
+                invalid.add(worker)
+
+        if worker not in invalid and len(current) == 1:
+            current_by_worker[worker] = current[0]
+
+    return current_by_worker, histories
 
 
 def lint_state(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -85,127 +153,201 @@ def lint_state(state: dict[str, Any]) -> list[dict[str, Any]]:
     if current_main is not None and (not isinstance(current_main, str) or not SHA.fullmatch(current_main)):
         findings.append(_finding("CURRENT_MAIN_SHA_INVALID", "current_main_sha must be an exact SHA"))
 
-    valid_claims = [c for c in claims if isinstance(c, dict)]
+    valid_claims = [claim for claim in claims if isinstance(claim, dict)]
     if len(valid_claims) != len(claims):
         findings.append(_finding("CLAIM_INVALID", "every claim must be an object"))
 
-    for c in valid_claims:
-        w = c.get("worker_id") if _text(c.get("worker_id")) else "<unknown>"
+    for claim in valid_claims:
+        worker = claim.get("worker_id") if _text(claim.get("worker_id")) else "<unknown>"
         for field in ("worker_id", "branch", "mission_id", "mission_summary", "integrator"):
-            if not _text(c.get(field)):
-                findings.append(_finding("CLAIM_FIELD_MISSING", f"{w}: missing {field}", w))
-        if not isinstance(c.get("claim_revision"), int) or isinstance(c.get("claim_revision"), bool) or c["claim_revision"] < 1:
-            findings.append(_finding("CLAIM_REVISION_INVALID", f"{w}: invalid claim_revision", w))
-        if not isinstance(c.get("base_sha"), str) or not SHA.fullmatch(c["base_sha"]):
-            findings.append(_finding("BASE_SHA_INVALID", f"{w}: base_sha must be exact", w))
+            if not _text(claim.get(field)):
+                findings.append(_finding("CLAIM_FIELD_MISSING", f"{worker}: missing {field}", worker))
+        revision = claim.get("claim_revision")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            findings.append(_finding("CLAIM_REVISION_INVALID", f"{worker}: invalid claim_revision", worker))
+        base_sha = claim.get("base_sha")
+        if not isinstance(base_sha, str) or not SHA.fullmatch(base_sha):
+            findings.append(_finding("BASE_SHA_INVALID", f"{worker}: base_sha must be exact", worker))
         for field in ("success_criteria", "scope_keys", "scope", "exclusions"):
-            if not _strings(c.get(field), nonempty=True):
-                findings.append(_finding("CLAIM_FIELD_MISSING", f"{w}: {field} must be a non-empty string list", w))
-        if not _strings(c.get("write_set", [])):
-            findings.append(_finding("WRITE_SET_INVALID", f"{w}: write_set must be a string list", w))
-        if c.get("status") not in CLAIM_STATUS:
-            findings.append(_finding("CLAIM_STATUS_INVALID", f"{w}: invalid claim status", w))
-        if current_main and c.get("status") in ACTIVE and c.get("base_sha") != current_main and c.get("stale_base_disposition") not in STALE_DISPOSITION:
-            findings.append(_finding("STALE_BASE_UNRECONCILED", f"{w}: stale base has no disposition", w))
+            if not _strings(claim.get(field), nonempty=True):
+                findings.append(
+                    _finding(
+                        "CLAIM_FIELD_MISSING",
+                        f"{worker}: {field} must be a non-empty string list",
+                        worker,
+                    )
+                )
+        if not _strings(claim.get("write_set", [])):
+            findings.append(_finding("WRITE_SET_INVALID", f"{worker}: write_set must be a string list", worker))
+        if claim.get("status") not in CLAIM_STATUS:
+            findings.append(_finding("CLAIM_STATUS_INVALID", f"{worker}: invalid claim status", worker))
+        if (
+            current_main
+            and claim.get("status") in ACTIVE
+            and base_sha != current_main
+            and claim.get("stale_base_disposition") not in STALE_DISPOSITION
+        ):
+            findings.append(_finding("STALE_BASE_UNRECONCILED", f"{worker}: stale base has no disposition", worker))
 
-        for h in c.get("hotspots", []):
-            if not isinstance(h, dict) or not _text(h.get("name")) or h.get("mode") not in HOTSPOT_MODE or not _strings(h.get("coordinated_with", [])):
-                findings.append(_finding("HOTSPOT_DECLARATION_INVALID", f"{w}: invalid hotspot declaration", w))
-        for d in c.get("dependencies", []):
-            if not isinstance(d, dict) or not all(_text(d.get(k)) for k in ("producer_worker", "consumer_worker", "interface")) or d.get("status") not in DEP_STATUS or not isinstance(d.get("blocking"), bool):
-                findings.append(_finding("DEPENDENCY_INVALID", f"{w}: invalid dependency", w))
+        for hotspot in claim.get("hotspots", []):
+            valid = (
+                isinstance(hotspot, dict)
+                and _text(hotspot.get("name"))
+                and hotspot.get("mode") in HOTSPOT_MODE
+                and _strings(hotspot.get("coordinated_with", []))
+            )
+            if not valid:
+                findings.append(_finding("HOTSPOT_DECLARATION_INVALID", f"{worker}: invalid hotspot declaration", worker))
+        for dep in claim.get("dependencies", []):
+            valid = (
+                isinstance(dep, dict)
+                and all(_text(dep.get(key)) for key in ("producer_worker", "consumer_worker", "interface"))
+                and dep.get("status") in DEP_STATUS
+                and isinstance(dep.get("blocking"), bool)
+            )
+            if not valid:
+                findings.append(_finding("DEPENDENCY_INVALID", f"{worker}: invalid dependency", worker))
                 continue
-            if d["consumer_worker"] != w:
-                findings.append(_finding("DEPENDENCY_CONSUMER_MISMATCH", f"{w}: dependency consumer mismatch", w))
-            if d["producer_worker"] == w:
-                findings.append(_finding("DEPENDENCY_SELF_REFERENCE", f"{w}: dependency producer cannot be self", w))
+            if dep["consumer_worker"] != worker:
+                findings.append(_finding("DEPENDENCY_CONSUMER_MISMATCH", f"{worker}: dependency consumer mismatch", worker))
+            if dep["producer_worker"] == worker:
+                findings.append(_finding("DEPENDENCY_SELF_REFERENCE", f"{worker}: dependency producer cannot be self", worker))
 
-    active = [c for c in valid_claims if c.get("status") in ACTIVE]
-    for i, a in enumerate(active):
-        aw = str(a.get("worker_id"))
-        for b in active[i + 1 :]:
-            bw = str(b.get("worker_id"))
-            pair = tuple(sorted((aw, bw)))
-            if a.get("branch") == b.get("branch"):
+    current_by_worker, histories = _resolve_current_claims(valid_claims, findings)
+
+    active = [claim for claim in valid_claims if claim.get("status") in ACTIVE]
+    for index, left in enumerate(active):
+        lw = str(left.get("worker_id"))
+        for right in active[index + 1 :]:
+            rw = str(right.get("worker_id"))
+            if lw == rw:
+                continue
+            pair = tuple(sorted((lw, rw)))
+            if left.get("branch") == right.get("branch"):
                 findings.append(_finding("BRANCH_COLLISION", f"{pair}: same branch", *pair))
-            shared_scope = sorted(set(a.get("scope_keys", [])) & set(b.get("scope_keys", [])))
+            shared_scope = sorted(set(left.get("scope_keys", [])) & set(right.get("scope_keys", [])))
             if shared_scope:
                 findings.append(_finding("SCOPE_COLLISION", f"{pair}: duplicate scope keys {shared_scope}", *pair))
-            for left in a.get("write_set", []):
-                for right in b.get("write_set", []):
-                    if _overlap(left, right):
-                        findings.append(_finding("WRITE_SET_CONFLICT", f"{pair}: {left!r} overlaps {right!r}", *pair))
-            ah = {x["name"]: x for x in a.get("hotspots", []) if isinstance(x, dict) and _text(x.get("name"))}
-            bh = {x["name"]: x for x in b.get("hotspots", []) if isinstance(x, dict) and _text(x.get("name"))}
-            for name in set(ah) & set(bh):
-                if ah[name].get("mode") == bh[name].get("mode") == "intentional_verification":
+            for left_path in left.get("write_set", []):
+                for right_path in right.get("write_set", []):
+                    if _overlap(left_path, right_path):
+                        findings.append(
+                            _finding(
+                                "WRITE_SET_CONFLICT",
+                                f"{pair}: {left_path!r} overlaps {right_path!r}",
+                                *pair,
+                            )
+                        )
+            left_hotspots = {
+                item["name"]: item
+                for item in left.get("hotspots", [])
+                if isinstance(item, dict) and _text(item.get("name"))
+            }
+            right_hotspots = {
+                item["name"]: item
+                for item in right.get("hotspots", [])
+                if isinstance(item, dict) and _text(item.get("name"))
+            }
+            for name in set(left_hotspots) & set(right_hotspots):
+                lh, rh = left_hotspots[name], right_hotspots[name]
+                if lh.get("mode") == rh.get("mode") == "intentional_verification":
                     continue
-                mutual = bw in ah[name].get("coordinated_with", []) and aw in bh[name].get("coordinated_with", [])
-                sequenced = ah[name].get("mode") == bh[name].get("mode") == "sequenced"
-                if not (mutual and sequenced and _deps_link(a, b)):
-                    findings.append(_finding("HOTSPOT_UNCOORDINATED", f"{pair}: hotspot {name!r} lacks reciprocal sequencing", *pair))
+                mutual = rw in lh.get("coordinated_with", []) and lw in rh.get("coordinated_with", [])
+                sequenced = lh.get("mode") == rh.get("mode") == "sequenced"
+                if not (mutual and sequenced and _deps_link(left, right)):
+                    findings.append(
+                        _finding(
+                            "HOTSPOT_UNCOORDINATED",
+                            f"{pair}: hotspot {name!r} lacks reciprocal sequencing",
+                            *pair,
+                        )
+                    )
 
-    by_worker = {str(c.get("worker_id")): c for c in valid_claims}
     branch_heads = state.get("current_branch_heads", {})
     pr_heads = state.get("current_pr_heads", {})
-    for h in handoffs:
-        if not isinstance(h, dict):
+    for handoff in handoffs:
+        if not isinstance(handoff, dict):
             findings.append(_finding("HANDOFF_INVALID", "every handoff must be an object"))
             continue
-        w = str(h.get("worker_id"))
-        c = by_worker.get(w)
-        if c is None:
-            findings.append(_finding("HANDOFF_WITHOUT_CLAIM", f"{w}: no matching claim", w))
+        worker = str(handoff.get("worker_id"))
+        claim = current_by_worker.get(worker)
+        if claim is None:
+            code = "HANDOFF_WITHOUT_CURRENT_CLAIM" if worker in histories else "HANDOFF_WITHOUT_CLAIM"
+            findings.append(_finding(code, f"{worker}: no unambiguous current claim", worker))
             continue
-        if h.get("status") not in HANDOFF_STATUS:
-            findings.append(_finding("HANDOFF_STATUS_INVALID", f"{w}: invalid handoff status", w))
-        if h.get("mission_id") != c.get("mission_id"):
-            findings.append(_finding("MISSION_MISMATCH", f"{w}: mission differs from claim", w))
-        if h.get("branch") != c.get("branch"):
-            findings.append(_finding("HANDOFF_BRANCH_MISMATCH", f"{w}: branch differs from claim", w))
-        if h.get("claim_revision") != c.get("claim_revision"):
-            findings.append(_finding("HANDOFF_CLAIM_STALE", f"{w}: stale claim revision", w))
-        head = h.get("head_sha")
-        if not isinstance(head, str) or not SHA.fullmatch(head):
-            findings.append(_finding("HANDOFF_HEAD_INVALID", f"{w}: invalid handoff head", w))
-        if isinstance(branch_heads, dict) and branch_heads.get(c.get("branch")) and branch_heads[c["branch"]] != head:
-            findings.append(_finding("BRANCH_HEAD_STALE", f"{w}: branch advanced after evidence", w))
+        if handoff.get("status") not in HANDOFF_STATUS:
+            findings.append(_finding("HANDOFF_STATUS_INVALID", f"{worker}: invalid handoff status", worker))
+        if handoff.get("mission_id") != claim.get("mission_id"):
+            findings.append(_finding("MISSION_MISMATCH", f"{worker}: mission differs from claim", worker))
+        if handoff.get("branch") != claim.get("branch"):
+            findings.append(_finding("HANDOFF_BRANCH_MISMATCH", f"{worker}: branch differs from claim", worker))
+        if handoff.get("claim_revision") != claim.get("claim_revision"):
+            findings.append(_finding("HANDOFF_CLAIM_STALE", f"{worker}: stale claim revision", worker))
 
-        changed = h.get("changed_files", [])
+        head = handoff.get("head_sha")
+        if not isinstance(head, str) or not SHA.fullmatch(head):
+            findings.append(_finding("HANDOFF_HEAD_INVALID", f"{worker}: invalid handoff head", worker))
+        if isinstance(branch_heads, dict) and branch_heads.get(claim.get("branch")) != head:
+            if branch_heads.get(claim.get("branch")):
+                findings.append(_finding("BRANCH_HEAD_STALE", f"{worker}: branch advanced after evidence", worker))
+
+        changed = handoff.get("changed_files", [])
         if not _strings(changed):
-            findings.append(_finding("CHANGED_FILES_INVALID", f"{w}: changed_files must be a string list", w))
+            findings.append(_finding("CHANGED_FILES_INVALID", f"{worker}: changed_files must be a string list", worker))
         else:
             for path in changed:
-                if not _covered(path, c.get("write_set", [])):
-                    findings.append(_finding("OUT_OF_SCOPE_CHANGE", f"{w}: {path!r} outside write_set", w))
+                if not _covered(path, claim.get("write_set", [])):
+                    findings.append(_finding("OUT_OF_SCOPE_CHANGE", f"{worker}: {path!r} outside write_set", worker))
 
-        if h.get("status") == "ready_for_integration":
-            if not _text(h.get("pr")):
-                findings.append(_finding("PR_REFERENCE_MISSING", f"{w}: PR reference missing", w))
-            pr_head = h.get("pr_head_sha")
+        if handoff.get("status") == "ready_for_integration":
+            if not _text(handoff.get("pr")):
+                findings.append(_finding("PR_REFERENCE_MISSING", f"{worker}: PR reference missing", worker))
+            pr_head = handoff.get("pr_head_sha")
             if not isinstance(pr_head, str) or not SHA.fullmatch(pr_head):
-                findings.append(_finding("PR_HEAD_INVALID", f"{w}: invalid PR head", w))
+                findings.append(_finding("PR_HEAD_INVALID", f"{worker}: invalid PR head", worker))
             elif pr_head != head:
-                findings.append(_finding("PR_HEAD_MISMATCH", f"{w}: PR head differs from tested head", w))
-            if isinstance(pr_heads, dict) and pr_heads.get(h.get("pr")) and pr_heads[h["pr"]] != pr_head:
-                findings.append(_finding("PR_HEAD_STALE", f"{w}: PR advanced after evidence", w))
-            if not _text(h.get("summary")) or not _text(h.get("selection_notes")):
-                findings.append(_finding("INTEGRATOR_PACKET_INCOMPLETE", f"{w}: missing summary/selection notes", w))
-            tests = h.get("tests")
+                findings.append(_finding("PR_HEAD_MISMATCH", f"{worker}: PR head differs from tested head", worker))
+            if isinstance(pr_heads, dict) and pr_heads.get(handoff.get("pr")) not in (None, pr_head):
+                findings.append(_finding("PR_HEAD_STALE", f"{worker}: PR advanced after evidence", worker))
+            if not _text(handoff.get("summary")) or not _text(handoff.get("selection_notes")):
+                findings.append(_finding("INTEGRATOR_PACKET_INCOMPLETE", f"{worker}: missing summary/selection notes", worker))
+            tests = handoff.get("tests")
             if not isinstance(tests, list) or not tests:
-                findings.append(_finding("TEST_EVIDENCE_MISSING", f"{w}: no tests actually run", w))
-            elif any(not isinstance(t, dict) or not _text(t.get("command")) or t.get("result") not in {"pass", "fail"} for t in tests):
-                findings.append(_finding("TEST_EVIDENCE_INVALID", f"{w}: malformed test evidence", w))
-            for d in c.get("dependencies", []):
-                if isinstance(d, dict) and d.get("blocking") is True and d.get("status") == "pending":
-                    findings.append(_finding("BLOCKING_DEPENDENCY_UNRESOLVED", f"{w}: pending blocker from {d.get('producer_worker')}", w))
+                findings.append(_finding("TEST_EVIDENCE_MISSING", f"{worker}: no tests actually run", worker))
+            elif any(
+                not isinstance(test, dict)
+                or not _text(test.get("command"))
+                or test.get("result") not in {"pass", "fail"}
+                for test in tests
+            ):
+                findings.append(_finding("TEST_EVIDENCE_INVALID", f"{worker}: malformed test evidence", worker))
+            for dep in claim.get("dependencies", []):
+                if isinstance(dep, dict) and dep.get("blocking") is True and dep.get("status") == "pending":
+                    findings.append(
+                        _finding(
+                            "BLOCKING_DEPENDENCY_UNRESOLVED",
+                            f"{worker}: pending blocker from {dep.get('producer_worker')}",
+                            worker,
+                        )
+                    )
 
         for field in ("risks", "assumptions", "blockers", "dependencies_consumed", "out_of_scope_findings"):
-            if not isinstance(h.get(field), list):
-                findings.append(_finding("INTEGRATOR_PACKET_INCOMPLETE", f"{w}: missing list field {field}", w))
-        for item in h.get("out_of_scope_findings", []):
-            if not isinstance(item, dict) or not all(_text(item.get(k)) for k in ("finding", "owner", "durable_ref")) or item.get("status") not in {"posted", "acknowledged"}:
-                findings.append(_finding("OUT_OF_SCOPE_HANDOFF_INVALID", f"{w}: out-of-scope finding lacks durable receipt", w))
+            if not isinstance(handoff.get(field), list):
+                findings.append(_finding("INTEGRATOR_PACKET_INCOMPLETE", f"{worker}: missing list field {field}", worker))
+        for item in handoff.get("out_of_scope_findings", []):
+            valid = (
+                isinstance(item, dict)
+                and all(_text(item.get(key)) for key in ("finding", "owner", "durable_ref"))
+                and item.get("status") in {"posted", "acknowledged"}
+            )
+            if not valid:
+                findings.append(
+                    _finding(
+                        "OUT_OF_SCOPE_HANDOFF_INVALID",
+                        f"{worker}: out-of-scope finding lacks durable receipt",
+                        worker,
+                    )
+                )
     return findings
 
 
@@ -260,10 +402,10 @@ def _handoff(**changes: Any) -> dict[str, Any]:
 
 
 def scenario(case_id: str) -> dict[str, Any]:
-    c3 = _claim()
+    current = _claim()
     state: dict[str, Any] = {
         "current_main_sha": BASE,
-        "claims": [c3],
+        "claims": [current],
         "handoffs": [],
         "current_branch_heads": {"validation/03-work": HEAD},
         "current_pr_heads": {"#40": HEAD},
@@ -273,30 +415,87 @@ def scenario(case_id: str) -> dict[str, Any]:
     elif case_id == "silent-scope-expansion-rejected":
         state["handoffs"] = [_handoff(changed_files=["work/03/fix.txt", "runtime/engine.py"])]
     elif case_id == "shared-hotspot-without-sequencing-rejected":
-        c3["hotspots"] = [{"name": "evals", "mode": "sequenced", "coordinated_with": []}]
+        current["hotspots"] = [{"name": "evals", "mode": "sequenced", "coordinated_with": []}]
         state["claims"].append(_claim("01", hotspots=[{"name": "evals", "mode": "sequenced", "coordinated_with": []}]))
     elif case_id == "sequenced-shared-hotspot-accepted":
-        c3["hotspots"] = [{"name": "evals", "mode": "sequenced", "coordinated_with": ["01"]}]
-        c3["dependencies"] = [{"producer_worker": "01", "consumer_worker": "03", "interface": "eval contract", "blocking": False, "status": "ready"}]
-        state["claims"].append(_claim("01", hotspots=[{"name": "evals", "mode": "sequenced", "coordinated_with": ["03"]}]))
+        current["hotspots"] = [{"name": "evals", "mode": "sequenced", "coordinated_with": ["01"]}]
+        current["dependencies"] = [
+            {
+                "producer_worker": "01",
+                "consumer_worker": "03",
+                "interface": "eval contract",
+                "blocking": False,
+                "status": "ready",
+            }
+        ]
+        state["claims"].append(
+            _claim("01", hotspots=[{"name": "evals", "mode": "sequenced", "coordinated_with": ["03"]}])
+        )
     elif case_id == "unfinished-blocking-dependency-rejected":
-        c3["dependencies"] = [{"producer_worker": "01", "consumer_worker": "03", "interface": "required artifact", "blocking": True, "status": "pending"}]
+        current["dependencies"] = [
+            {
+                "producer_worker": "01",
+                "consumer_worker": "03",
+                "interface": "required artifact",
+                "blocking": True,
+                "status": "pending",
+            }
+        ]
         state["handoffs"] = [_handoff()]
     elif case_id == "stale-base-without-disposition-rejected":
-        c3["base_sha"] = "b" * 40
+        current["base_sha"] = "b" * 40
     elif case_id == "advanced-pr-state-rejected":
         state["handoffs"] = [_handoff()]
         state["current_pr_heads"]["#40"] = "4" * 40
     elif case_id == "global-mission-mismatch-rejected":
         state["handoffs"] = [_handoff(mission_id="local-only")]
     elif case_id == "lost-out-of-scope-finding-rejected":
-        state["handoffs"] = [_handoff(out_of_scope_findings=[{"finding": "adjacent defect", "owner": "04", "status": "local_only"}])]
+        state["handoffs"] = [
+            _handoff(out_of_scope_findings=[{"finding": "adjacent defect", "owner": "04", "status": "local_only"}])
+        ]
     elif case_id == "completion-without-test-evidence-rejected":
         state["handoffs"] = [_handoff(tests=[])]
     elif case_id == "insufficient-integrator-selection-packet-rejected":
         state["handoffs"] = [_handoff(selection_notes="")]
+    elif case_id in {
+        "superseded-history-before-current-accepted",
+        "superseded-history-after-current-accepted",
+    }:
+        historical = _claim(claim_revision=1, status="superseded")
+        current = _claim(claim_revision=2, status="active")
+        if case_id.endswith("before-current-accepted"):
+            state["claims"] = [historical, current]
+        else:
+            state["claims"] = [current, historical]
+        state["handoffs"] = [_handoff(claim_revision=2)]
+    elif case_id == "duplicate-claim-revision-rejected":
+        state["claims"] = [
+            _claim(claim_revision=1, status="superseded"),
+            _claim(claim_revision=1, status="active"),
+        ]
+    elif case_id == "multiple-current-claims-rejected":
+        state["claims"] = [
+            _claim(claim_revision=1, status="active"),
+            _claim(claim_revision=2, status="ready_for_handoff"),
+        ]
+    elif case_id == "current-claim-not-highest-revision-rejected":
+        state["claims"] = [
+            _claim(claim_revision=1, status="active"),
+            _claim(claim_revision=2, status="superseded"),
+        ]
     elif case_id == "complete-handoff-accepted":
-        state["handoffs"] = [_handoff(out_of_scope_findings=[{"finding": "adjacent defect", "owner": "04", "durable_ref": "issue-27#comment", "status": "acknowledged"}])]
+        state["handoffs"] = [
+            _handoff(
+                out_of_scope_findings=[
+                    {
+                        "finding": "adjacent defect",
+                        "owner": "04",
+                        "durable_ref": "issue-27#comment",
+                        "status": "acknowledged",
+                    }
+                ]
+            )
+        ]
     else:
         raise ValueError(f"unknown coordination scenario {case_id!r}")
     return state
@@ -305,15 +504,21 @@ def scenario(case_id: str) -> dict[str, Any]:
 def evaluate_case(case: dict[str, Any]) -> dict[str, Any]:
     state = copy.deepcopy(case.get("state")) if isinstance(case.get("state"), dict) else scenario(case["case_id"])
     findings = lint_state(state)
-    codes = sorted({f["code"] for f in findings})
+    codes = sorted({finding["code"] for finding in findings})
     expected = case.get("expected", {})
     passed = (not findings) == expected.get("valid") and all(code in codes for code in expected.get("codes", []))
-    return {"case_id": case["case_id"], "passed": passed, "actual_valid": not findings, "codes": codes, "findings": findings}
+    return {
+        "case_id": case["case_id"],
+        "passed": passed,
+        "actual_valid": not findings,
+        "codes": codes,
+        "findings": findings,
+    }
 
 
 def load_cases(path: Path) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, list) or not all(isinstance(x, dict) for x in data):
+    if not isinstance(data, list) or not all(isinstance(item, dict) for item in data):
         raise ValueError("coordination eval file must contain a list of objects")
     return data
 
@@ -324,12 +529,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     results = [evaluate_case(case) for case in load_cases(Path(args.case_file))]
-    failed = [r for r in results if not r["passed"]]
+    failed = [result for result in results if not result["passed"]]
     if args.json:
         print(json.dumps(results, indent=2, sort_keys=True))
     else:
-        for r in results:
-            print(f"{'PASS' if r['passed'] else 'FAIL'} {r['case_id']}")
+        for result in results:
+            print(f"{'PASS' if result['passed'] else 'FAIL'} {result['case_id']}")
         print(f"{len(results) - len(failed)}/{len(results)} coordination eval cases passed")
     return 1 if failed else 0
 
