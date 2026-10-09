@@ -12,10 +12,13 @@ CASE_FILE = ROOT / "evals" / "coordination" / "cases.json"
 
 class ParallelCoordinationContractTests(unittest.TestCase):
     def test_fixture_suite_matches_expected_outcomes(self) -> None:
-        results = [coordination.evaluate_case(case) for case in coordination.load_cases(CASE_FILE)]
+        results = [
+            coordination.evaluate_case(case)
+            for case in coordination.load_cases(CASE_FILE)
+        ]
         failures = [result for result in results if not result["passed"]]
         self.assertEqual(failures, [], failures)
-        self.assertEqual(len(results), 17)
+        self.assertEqual(len(results), 20)
 
     def test_changed_file_must_be_within_declared_write_set(self) -> None:
         codes = {
@@ -44,6 +47,22 @@ class ParallelCoordinationContractTests(unittest.TestCase):
                     coordination.lint_state(coordination.scenario(case_id)),
                     [],
                 )
+
+    def test_ready_handoff_requires_passing_tests_and_live_heads(self) -> None:
+        expected = {
+            "completion-with-failed-test-rejected": "TEST_EVIDENCE_FAILED",
+            "completion-without-live-branch-head-rejected": "BRANCH_HEAD_UNVERIFIED",
+            "completion-without-live-pr-head-rejected": "PR_HEAD_UNVERIFIED",
+        }
+        for case_id, code in expected.items():
+            with self.subTest(case_id=case_id):
+                codes = {
+                    finding["code"]
+                    for finding in coordination.lint_state(
+                        coordination.scenario(case_id)
+                    )
+                }
+                self.assertIn(code, codes)
 
     def test_ambiguous_claim_history_fails_closed(self) -> None:
         expected = {
