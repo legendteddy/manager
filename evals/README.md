@@ -48,9 +48,14 @@ The executable deterministic fixture set currently covers:
 14. stricter repository-local/subsystem constraints remain binding under broader governance;
 15. inferred memory cannot override current authoritative state;
 16. unknown/unclassified instruction sources fail closed when no real authority remains;
-17. older context remains usable only as the lowest-precedence applicable context.
+17. older context remains usable only as the lowest-precedence applicable context;
+18. precedence context cannot bypass the material-approval gate;
+19. precedence context cannot erase untrusted-content handling;
+20. precedence context cannot erase private-to-public safety handling.
 
 The precedence fixtures use a synthetic `prior_state.precedence_context` supplied by the eval harness. It represents application-owned source classification and context-loading state for deterministic testing only. It does not make repository text or retrieved content authoritative by itself, and it does not let older conversation or memory outrank current governance or state.
+
+Baseline Manager controls run before the precedence oracle. Precedence evaluation is eligible only after the base control plane has produced a completed public direct path with no untrusted-content input, so it cannot replace approval, specialist/reconciliation routing, prompt-injection handling, or privacy gates.
 
 The broader strategy additionally calls for future coverage of unnecessary specialist rejection, justified parallelism, evaluator ownership boundaries, unsupported readiness claims, failure recovery, private reference anonymity, evidence-class separation, and bounded evolution.
 
