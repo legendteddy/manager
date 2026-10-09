@@ -53,19 +53,20 @@ class MCPResourceLimits:
 class MCPNetworkPolicy:
     """Safe-by-default egress policy for URL-backed MCP transports.
 
-    Loopback HTTP remains available for local development and conformance.
-    Private/link-local destinations require explicit application policy. Strong
-    production egress still belongs in a firewall, proxy, service mesh, or
-    container/network sandbox because userspace DNS checks cannot eliminate all
-    DNS-rebinding or compromised-host races.
+    Loopback, private, link-local, and other non-global destinations require
+    explicit application policy. Local development and conformance can opt in
+    to loopback deliberately. Strong production egress still belongs in a
+    firewall, proxy, service mesh, or container/network sandbox because
+    userspace DNS checks cannot eliminate all DNS-rebinding or compromised-host
+    races.
     """
 
-    allow_loopback: bool = True
+    allow_loopback: bool = False
     allow_private_networks: bool = False
     allow_link_local: bool = False
     allow_multicast: bool = False
     allow_unspecified: bool = False
-    allow_plain_http_loopback: bool = True
+    allow_plain_http_loopback: bool = False
     allow_plain_http_private: bool = False
     resolve_hostnames: bool = True
     allowed_hosts: tuple[str, ...] = ()

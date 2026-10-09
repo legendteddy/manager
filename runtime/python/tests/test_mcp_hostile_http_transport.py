@@ -6,7 +6,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Type
 
-from manager_runtime.mcp import MCPBoundaryError, OfficialMCPClient
+from manager_runtime.mcp import MCPBoundaryError, MCPNetworkPolicy, OfficialMCPClient
 
 MCP_AVAILABLE = (
     importlib.util.find_spec("mcp") is not None
@@ -14,6 +14,10 @@ MCP_AVAILABLE = (
 )
 SECRET = "synthetic-cross-origin-bearer-secret"
 REMOTE_BODY_SECRET = "synthetic-remote-body-secret"
+LOCAL_MCP_NETWORK_POLICY = MCPNetworkPolicy(
+    allow_loopback=True,
+    allow_plain_http_loopback=True,
+)
 
 
 class QuietHandler(BaseHTTPRequestHandler):
@@ -125,6 +129,7 @@ class HostileMCPHTTPTransportTests(unittest.TestCase):
                 "unexpected-content-type",
                 stub.url,
                 operation_timeout_seconds=1.0,
+                network_policy=LOCAL_MCP_NETWORK_POLICY,
             )
             with self.assertRaises(MCPBoundaryError) as raised:
                 client.list_tools()
@@ -137,6 +142,7 @@ class HostileMCPHTTPTransportTests(unittest.TestCase):
                 "truncated-http",
                 stub.url,
                 operation_timeout_seconds=1.0,
+                network_policy=LOCAL_MCP_NETWORK_POLICY,
             )
             with self.assertRaises(MCPBoundaryError) as raised:
                 client.list_tools()
