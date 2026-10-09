@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 import unittest
 from copy import deepcopy
 
@@ -63,16 +62,15 @@ def definition() -> dict:
 
 
 def identity() -> dict:
-    now = time.time()
     return {
         "subject": "synthetic-worker",
         "issuer": "https://issuer.example",
         "audiences": ["manager-api"],
         "principal_type": "worker",
         "capabilities": ["tools.destroy"],
-        "expires_at": now + 3600,
-        "not_before": now - 60,
-        "issued_at": now - 60,
+        "expires_at": 4_000_000_000.0,
+        "not_before": 0.0,
+        "issued_at": 1_700_000_000.0,
         "token_id": "synthetic-token",
         "algorithm": "HS256",
     }
