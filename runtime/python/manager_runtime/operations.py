@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator, Mapping
 
 from .capacity import CapacityLimits, CapacityManager, OverloadedError
-from .observability import Correlation, NullTelemetrySink, SafeTelemetry, TelemetrySink
+from .observability import Correlation, SafeTelemetry, TelemetrySink
 
 
 _EVENT_BY_KIND = {
@@ -56,7 +56,7 @@ class OperationalRuntime:
         telemetry_sink: TelemetrySink | None = None,
     ) -> None:
         self.capacity = CapacityManager(limits)
-        self.telemetry = SafeTelemetry(telemetry_sink or NullTelemetrySink())
+        self.telemetry = SafeTelemetry(telemetry_sink)
 
     @contextmanager
     def operation(
@@ -174,14 +174,19 @@ class OperationalRuntime:
         }
         snapshot["saturation"] = saturation
         sink_failures = self.telemetry.sink_failures
+        sink_dropped = self.telemetry.sink_dropped
         sanitization_failures = self.telemetry.sanitization_failures
         label_overflows = self.telemetry.label_cardinality_overflows
         snapshot["telemetry_sink_failures"] = sink_failures
+        snapshot["telemetry_sink_dropped"] = sink_dropped
+        snapshot["telemetry_sink_pending"] = self.telemetry.sink_pending
+        snapshot["telemetry_sink_queue_capacity"] = self.telemetry.sink_queue_capacity
+        snapshot["telemetry_sink_inflight_seconds"] = self.telemetry.sink_inflight_seconds
         snapshot["telemetry_sanitization_failures"] = sanitization_failures
         snapshot["telemetry_label_cardinality_overflows"] = label_overflows
         if any(value >= 1.0 for value in saturation.values()):
             snapshot["status"] = "saturated"
-        elif sink_failures or sanitization_failures or label_overflows:
+        elif sink_failures or sink_dropped or sanitization_failures or label_overflows:
             snapshot["status"] = "degraded"
         else:
             snapshot["status"] = "ok"
