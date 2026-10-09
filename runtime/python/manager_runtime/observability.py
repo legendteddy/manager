@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from itertools import islice
-from typing import Any, Iterator, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, Iterator, Mapping, Protocol, runtime_checkable
 
 _REDACTED = "[REDACTED]"
 _SECRET_KEY_FRAGMENTS = {
@@ -305,7 +305,7 @@ class JsonLoggingSink:
     """Emit already-sanitized telemetry as compact JSON through stdlib logging."""
 
     def __init__(self, logger: logging.Logger | None = None) -> None:
-        self.logger = logger or logging.getLogger("manager_runtime")
+        self.logger = logger if logger is not None else logging.getLogger("manager_runtime")
 
     def _write(self, kind: str, value: Any) -> None:
         payload = {"telemetry_type": kind, **asdict(value)}
@@ -329,8 +329,8 @@ class _BoundedSinkDispatcher:
         sink: TelemetrySink,
         *,
         max_pending: int,
-        on_failure: callable,
-        on_drop: callable,
+        on_failure: Callable[[], None],
+        on_drop: Callable[[], None],
     ) -> None:
         self._sink = sink
         self._queue: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=max_pending)
@@ -417,7 +417,7 @@ class SafeTelemetry:
     ) -> None:
         if type(sink_queue_size) is not int or sink_queue_size < 1:
             raise ValueError("sink_queue_size must be a positive integer")
-        self.sink: TelemetrySink = sink or NullTelemetrySink()
+        self.sink: TelemetrySink = sink if sink is not None else NullTelemetrySink()
         self._failure_lock = threading.Lock()
         self._sink_failures = 0
         self._sink_dropped = 0
