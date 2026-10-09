@@ -92,6 +92,8 @@ def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> An
         if isinstance(current, float):
             return current if math.isfinite(current) else "[NON_FINITE_NUMBER]"
         if isinstance(current, str):
+            # Only scan a bounded prefix because text after max_string_chars is
+            # never retained in telemetry anyway.
             bounded = current[: max_string_chars + 128]
             text = _BEARER.sub("Bearer [REDACTED]", bounded)
             text = _SECRETISH.sub(_REDACTED, text)
