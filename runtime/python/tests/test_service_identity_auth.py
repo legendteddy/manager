@@ -237,7 +237,8 @@ class ServiceIdentityAuthenticationTests(unittest.TestCase):
                 ]
                 valid = jwt_token()
                 head, body, signature = valid.split(".")
-                candidates.append(f"{head}.{body}.{signature[:-1]}A")
+                replacement = "A" if signature[0] != "A" else "B"
+                candidates.append(f"{head}.{body}.{replacement}{signature[1:]}")
                 for candidate in candidates:
                     with self.subTest(token=candidate[-16:]):
                         status, response = service.request(candidate)
