@@ -7,6 +7,9 @@ from typing import Any
 TRUNCATION_MARKER = "...[truncated by Manager]"
 _MAX_DEPTH = 64
 _MAX_INTEGER_BITS = 4096
+_STRICT_MAX_BYTES = 1024 * 1024
+_STRICT_MAX_ITEMS = 10_000
+_STRICT_MAX_DEPTH = 32
 
 
 class _BoundedWriter:
@@ -172,17 +175,10 @@ def _emit(value: Any, writer: _BoundedWriter, seen: set[int], depth: int) -> Non
             seen.remove(identity)
         return
 
-    # Avoid arbitrary collection/scalar subclass hooks, __str__, or __repr__.
     _emit_string(f"<{value_type.__name__}>", writer)
 
 
 def bounded_json_text(value: Any, max_chars: int) -> str:
-    """Return a bounded JSON-like preview without materializing the full value.
-
-    Traversal stops as soon as the output budget is exhausted. The function is
-    intentionally a model-context preview, not a canonical serializer or a
-    replacement for persistence formats.
-    """
     if type(max_chars) is not int or max_chars < 1:
         raise ValueError("max_chars must be a positive integer")
     writer = _BoundedWriter(max_chars)
@@ -190,46 +186,110 @@ def bounded_json_text(value: Any, max_chars: int) -> str:
     return writer.render()
 
 
-def strict_json_snapshot(value: Any, *, label: str = "value") -> Any:
-    """Return a detached strict-JSON snapshot or fail closed."""
-    stack = [value]
-    seen_containers: set[int] = set()
-    while stack:
-        current = stack.pop()
+def strict_json_snapshot(
+    value: Any,
+    *,
+    label: str = "value",
+    max_bytes: int = _STRICT_MAX_BYTES,
+    max_items: int = _STRICT_MAX_ITEMS,
+    max_depth: int = _STRICT_MAX_DEPTH,
+) -> Any:
+    for name, limit in (
+        ("max_bytes", max_bytes),
+        ("max_items", max_items),
+        ("max_depth", max_depth),
+    ):
+        if type(limit) is not int or limit < 1:
+            raise ValueError(f"{name} must be a positive integer")
+
+    item_count = 0
+    minimum_chars = 0
+    path: set[int] = set()
+
+    def account(amount: int) -> None:
+        nonlocal minimum_chars
+        minimum_chars += amount
+        if minimum_chars > max_bytes:
+            raise ValueError(f"{label} exceeds the JSON byte limit")
+
+    def copy_value(current: Any, depth: int) -> Any:
+        nonlocal item_count
+        if depth > max_depth:
+            raise ValueError(f"{label} exceeds the JSON depth limit")
+        item_count += 1
+        if item_count > max_items:
+            raise ValueError(f"{label} exceeds the JSON item limit")
+
         current_type = type(current)
-        if current is None or current_type in {bool, str, int}:
-            continue
+        if current is None:
+            account(4)
+            return None
+        if current_type is bool:
+            account(4 if current else 5)
+            return current
+        if current_type is str:
+            if len(current) > max_bytes:
+                raise ValueError(f"{label} exceeds the JSON byte limit")
+            account(len(current) + 2)
+            return current
+        if current_type is int:
+            if current.bit_length() > _MAX_INTEGER_BITS:
+                raise ValueError(f"{label} contains an oversized integer")
+            account(1)
+            return current
         if current_type is float:
             if not math.isfinite(current):
                 raise ValueError(f"{label} contains a non-finite number")
-            continue
+            account(1)
+            return current
         if current_type is dict:
             identity = id(current)
-            if identity in seen_containers:
-                continue
-            seen_containers.add(identity)
-            for key, item in current.items():
-                if type(key) is not str:
-                    raise TypeError(f"{label} object keys must be strings")
-                stack.append(item)
-            continue
+            if identity in path:
+                raise ValueError(f"{label} contains a cycle")
+            path.add(identity)
+            try:
+                account(2)
+                copied: dict[str, Any] = {}
+                first = True
+                for key, item in current.items():
+                    if type(key) is not str:
+                        raise TypeError(f"{label} object keys must be strings")
+                    if len(key) > max_bytes:
+                        raise ValueError(f"{label} exceeds the JSON byte limit")
+                    account(len(key) + 3 + (0 if first else 1))
+                    first = False
+                    copied[key] = copy_value(item, depth + 1)
+                return copied
+            finally:
+                path.remove(identity)
         if current_type is list:
             identity = id(current)
-            if identity in seen_containers:
-                continue
-            seen_containers.add(identity)
-            stack.extend(current)
-            continue
+            if identity in path:
+                raise ValueError(f"{label} contains a cycle")
+            path.add(identity)
+            try:
+                account(2)
+                copied_list: list[Any] = []
+                for index, item in enumerate(current):
+                    if index:
+                        account(1)
+                    copied_list.append(copy_value(item, depth + 1))
+                return copied_list
+            finally:
+                path.remove(identity)
         raise TypeError(f"{label} contains a non-JSON value")
 
+    snapshot = copy_value(value, 0)
     try:
         encoded = json.dumps(
-            value,
+            snapshot,
             separators=(",", ":"),
             ensure_ascii=False,
             allow_nan=False,
             check_circular=True,
-        )
-        return json.loads(encoded)
+        ).encode("utf-8")
     except (TypeError, ValueError, RecursionError) as exc:
         raise ValueError(f"{label} must be strict JSON") from exc
+    if len(encoded) > max_bytes:
+        raise ValueError(f"{label} exceeds the JSON byte limit")
+    return snapshot
