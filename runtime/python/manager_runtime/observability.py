@@ -32,6 +32,7 @@ _BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+\-/]+=*")
 _SECRETISH = re.compile(r"(?i)\b(?:sk|pk|api)[-_][A-Za-z0-9_-]{12,}\b")
 _DEFAULT_REDACTION_NODES = 256
 _DEFAULT_SINK_QUEUE = 256
+_IDENTIFIER_HASH_EDGE_CHARS = 256
 _LABEL_CARDINALITY_LIMIT = 64
 _LABEL_OVERFLOW = "overflow"
 _LABEL_SCAN_LIMIT = 64
@@ -43,10 +44,19 @@ def _now() -> str:
 
 
 def _hash_text(text: str) -> str:
-    hasher = hashlib.sha256()
-    for offset in range(0, len(text), 4096):
-        hasher.update(text[offset : offset + 4096].encode("utf-8", errors="replace"))
-    return hasher.hexdigest()
+    return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _bounded_identifier_hash(value: str | bytes) -> str:
+    """Fingerprint an identifier with work bounded independently of its length."""
+    if type(value) is str:
+        prefix = value[:_IDENTIFIER_HASH_EDGE_CHARS].encode("utf-8", errors="replace")
+        suffix = value[-_IDENTIFIER_HASH_EDGE_CHARS:].encode("utf-8", errors="replace")
+    else:
+        prefix = value[:_IDENTIFIER_HASH_EDGE_CHARS]
+        suffix = value[-_IDENTIFIER_HASH_EDGE_CHARS:]
+    payload = str(len(value)).encode("ascii") + b":" + prefix + b":" + suffix
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _bounded_label_hash(text: str) -> str:
@@ -61,17 +71,15 @@ def safe_identifier(value: Any) -> str | None:
     if value is None:
         return None
     if type(value) is str:
-        text = value
-    elif type(value) is int:
-        text = str(value)
-    elif type(value) is bytes:
-        return f"hash:{hashlib.sha256(value).hexdigest()[:20]}"
-    else:
-        typename = f"{type(value).__module__}.{type(value).__qualname__}"
-        return f"hash:{hashlib.sha256(typename.encode()).hexdigest()[:20]}"
-    if _SAFE_IDENTIFIER.fullmatch(text) and _SECRETISH.search(text) is None:
-        return text
-    return f"hash:{_hash_text(text)[:20]}"
+        if _SAFE_IDENTIFIER.fullmatch(value) and _SECRETISH.search(value) is None:
+            return value
+        return f"hash:{_bounded_identifier_hash(value)[:20]}"
+    if type(value) is int:
+        return str(value)
+    if type(value) is bytes:
+        return f"hash:{_bounded_identifier_hash(value)[:20]}"
+    typename = f"{type(value).__module__}.{type(value).__qualname__}"
+    return f"hash:{hashlib.sha256(typename.encode()).hexdigest()[:20]}"
 
 
 def _safe_key(key: Any) -> str:
@@ -541,7 +549,7 @@ class SafeTelemetry:
         self._emit("event", event)
 
     def metric(self, name: str, kind: str, value: float, *, labels: Mapping[str, Any] | None = None) -> None:
-        if kind not in {"counter", "gauge", "histogram"}:
+        if type(kind) is not str or kind not in {"counter", "gauge", "histogram"}:
             raise ValueError("metric kind must be counter, gauge, or histogram")
         if type(value) not in {int, float} or not math.isfinite(float(value)):
             raise ValueError("metric value must be a finite number")
