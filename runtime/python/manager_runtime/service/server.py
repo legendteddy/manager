@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import re
@@ -19,14 +18,19 @@ from ..deployment import DependencyCheck, GracefulShutdown, HealthRegistry, vali
 from ..deployment.config import DeploymentConfig, load_deployment_config
 from ..engine import run as run_control_plane
 from ..operations import OperationalRuntime
-from ..security import MountedFileSecretProvider, SecurityBoundaryError
 from ..state import SQLiteRunStore
+from .auth import ServiceAuthConfig, ServiceAuthenticator
 from .worker_pool import BoundedDaemonWorkerPool
 
 _SERVICE_PREFIX = "MANAGER_SERVICE_"
 _ALLOWED_SERVICE_ENV = {
     "MANAGER_SERVICE_AUTH_MODE",
     "MANAGER_SERVICE_AUTH_SECRET_NAME",
+    "MANAGER_SERVICE_AUTH_ISSUER",
+    "MANAGER_SERVICE_AUTH_AUDIENCE",
+    "MANAGER_SERVICE_AUTH_PRINCIPAL_TYPE",
+    "MANAGER_SERVICE_AUTH_CLOCK_SKEW_SECONDS",
+    "MANAGER_SERVICE_AUTH_REQUIRE_JTI",
     "MANAGER_SERVICE_MAX_REQUEST_BYTES",
 }
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
@@ -59,6 +63,41 @@ class ManagerServiceSettings:
     auth_mode: str
     auth_secret_name: str
     max_request_bytes: int
+    auth_issuer: str | None = None
+    auth_audience: str | None = None
+    auth_principal_type: str = "api_client"
+    auth_clock_skew_seconds: int = 60
+    auth_require_jti: bool = True
+
+
+def _env_bool(env: Mapping[str, str], name: str, default: bool) -> bool:
+    raw = env.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ServiceConfigError(f"{name} must be a boolean")
+
+
+def _env_int(
+    env: Mapping[str, str],
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = env.get(name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ServiceConfigError(f"{name} must be an integer") from exc
+    if not minimum <= value <= maximum:
+        raise ServiceConfigError(f"{name} must be between {minimum} and {maximum}")
+    return value
 
 
 def load_service_settings(
@@ -75,29 +114,63 @@ def load_service_settings(
 
     default_mode = "bearer" if config.environment in {"staging", "production"} else "none"
     auth_mode = env.get("MANAGER_SERVICE_AUTH_MODE", default_mode).strip().lower()
-    if auth_mode not in {"none", "bearer"}:
-        raise ServiceConfigError("MANAGER_SERVICE_AUTH_MODE must be none or bearer")
-    if config.environment in {"staging", "production"} and auth_mode != "bearer":
-        raise ServiceConfigError(f"{config.environment} service authentication must use bearer mode")
+    if auth_mode not in {"none", "bearer", "jwt_hs256"}:
+        raise ServiceConfigError(
+            "MANAGER_SERVICE_AUTH_MODE must be none, bearer, or jwt_hs256"
+        )
+    if config.environment in {"staging", "production"} and auth_mode == "none":
+        raise ServiceConfigError(f"{config.environment} service authentication cannot be disabled")
 
     auth_secret_name = env.get("MANAGER_SERVICE_AUTH_SECRET_NAME", "service-auth-token").strip()
     if not auth_secret_name or re.fullmatch(r"[A-Za-z0-9_.-]+", auth_secret_name) is None:
         raise ServiceConfigError("MANAGER_SERVICE_AUTH_SECRET_NAME is invalid")
-    if auth_mode == "bearer" and not config.secrets_dir:
-        raise ServiceConfigError("bearer service authentication requires deployment secrets_dir")
+    if auth_mode != "none" and not config.secrets_dir:
+        raise ServiceConfigError("authenticated service mode requires deployment secrets_dir")
 
-    raw_limit = env.get("MANAGER_SERVICE_MAX_REQUEST_BYTES", str(1024 * 1024))
-    try:
-        max_request_bytes = int(raw_limit)
-    except (TypeError, ValueError) as exc:
-        raise ServiceConfigError("MANAGER_SERVICE_MAX_REQUEST_BYTES must be an integer") from exc
-    if not 1024 <= max_request_bytes <= 16 * 1024 * 1024:
-        raise ServiceConfigError("MANAGER_SERVICE_MAX_REQUEST_BYTES must be between 1024 and 16777216")
+    auth_issuer = env.get("MANAGER_SERVICE_AUTH_ISSUER")
+    if auth_issuer is not None:
+        auth_issuer = auth_issuer.strip()
+    auth_audience = env.get("MANAGER_SERVICE_AUTH_AUDIENCE")
+    if auth_audience is not None:
+        auth_audience = auth_audience.strip()
+    auth_principal_type = env.get(
+        "MANAGER_SERVICE_AUTH_PRINCIPAL_TYPE", "api_client"
+    ).strip()
+    if not auth_principal_type or len(auth_principal_type) > 128:
+        raise ServiceConfigError("MANAGER_SERVICE_AUTH_PRINCIPAL_TYPE is invalid")
+    auth_clock_skew_seconds = _env_int(
+        env,
+        "MANAGER_SERVICE_AUTH_CLOCK_SKEW_SECONDS",
+        60,
+        minimum=0,
+        maximum=600,
+    )
+    auth_require_jti = _env_bool(env, "MANAGER_SERVICE_AUTH_REQUIRE_JTI", True)
+    if auth_mode == "jwt_hs256":
+        if not auth_issuer:
+            raise ServiceConfigError("JWT service authentication requires MANAGER_SERVICE_AUTH_ISSUER")
+        if not auth_audience:
+            raise ServiceConfigError(
+                "JWT service authentication requires MANAGER_SERVICE_AUTH_AUDIENCE"
+            )
+
+    max_request_bytes = _env_int(
+        env,
+        "MANAGER_SERVICE_MAX_REQUEST_BYTES",
+        1024 * 1024,
+        minimum=1024,
+        maximum=16 * 1024 * 1024,
+    )
 
     return ManagerServiceSettings(
         auth_mode=auth_mode,
         auth_secret_name=auth_secret_name,
         max_request_bytes=max_request_bytes,
+        auth_issuer=auth_issuer,
+        auth_audience=auth_audience,
+        auth_principal_type=auth_principal_type,
+        auth_clock_skew_seconds=auth_clock_skew_seconds,
+        auth_require_jti=auth_require_jti,
     )
 
 
@@ -165,19 +238,29 @@ def _validate_task_input(value: Any) -> dict[str, Any]:
     if classification["uncertainty"] not in {"low", "medium", "high"}:
         raise ValueError("task.classification.uncertainty is invalid")
     if "reversibility" in classification and classification["reversibility"] not in {
-        "reversible", "partially_reversible", "irreversible", "unknown"
+        "reversible",
+        "partially_reversible",
+        "irreversible",
+        "unknown",
     }:
         raise ValueError("task.classification.reversibility is invalid")
     if "sensitivity" in classification and classification["sensitivity"] not in {
-        "public", "internal", "sensitive", "unknown"
+        "public",
+        "internal",
+        "sensitive",
+        "unknown",
     }:
         raise ValueError("task.classification.sensitivity is invalid")
     capabilities = task.get("requested_capabilities")
     if capabilities is not None:
-        if not isinstance(capabilities, list) or not all(
-            isinstance(item, str) and item for item in capabilities
-        ) or len(set(capabilities)) != len(capabilities):
-            raise ValueError("task.requested_capabilities must contain unique non-empty strings")
+        if (
+            not isinstance(capabilities, list)
+            or not all(isinstance(item, str) and item for item in capabilities)
+            or len(set(capabilities)) != len(capabilities)
+        ):
+            raise ValueError(
+                "task.requested_capabilities must contain unique non-empty strings"
+            )
     for name in ("inputs", "authority", "extensions"):
         if name in task and not isinstance(task[name], dict):
             raise ValueError(f"task.{name} must be an object")
@@ -194,48 +277,6 @@ def _validate_task_input(value: Any) -> dict[str, Any]:
             if not isinstance(item, str) or not item or len(item) > 65536:
                 raise ValueError("untrusted_content items must be bounded non-empty text")
     return value
-
-
-class _BearerAuthenticator:
-    def __init__(self, config: DeploymentConfig, settings: ManagerServiceSettings) -> None:
-        self.mode = settings.auth_mode
-        self.secret_name = settings.auth_secret_name
-        self.provider = (
-            MountedFileSecretProvider(config.secrets_dir)
-            if self.mode == "bearer" and config.secrets_dir is not None
-            else None
-        )
-
-    def ready(self) -> bool | tuple[bool, str]:
-        if self.mode == "none":
-            return True
-        try:
-            assert self.provider is not None
-            self.provider.acquire(self.secret_name).reveal()
-        except Exception:
-            return False, "service credential unavailable"
-        return True
-
-    def require_available(self) -> None:
-        result = self.ready()
-        ok = result if isinstance(result, bool) else result[0]
-        if not ok:
-            raise ServiceConfigError("service authentication credential is unavailable")
-
-    def authorized(self, header: str | None) -> bool:
-        if self.mode == "none":
-            return True
-        if not isinstance(header, str) or len(header) > 16384 or not header.startswith("Bearer "):
-            return False
-        supplied = header[7:].encode("utf-8", errors="strict")
-        if not supplied:
-            return False
-        try:
-            assert self.provider is not None
-            expected = self.provider.acquire(self.secret_name).reveal()
-        except (SecurityBoundaryError, OSError, ValueError):
-            return False
-        return hmac.compare_digest(supplied, expected)
 
 
 class _JsonStdoutTelemetrySink:
@@ -314,7 +355,7 @@ class ManagerServiceContext:
     config: DeploymentConfig
     settings: ManagerServiceSettings
     health: HealthRegistry
-    authenticator: _BearerAuthenticator
+    authenticator: ServiceAuthenticator
     operations: OperationalRuntime
     telemetry: _Telemetry
 
@@ -372,17 +413,28 @@ class _BoundedHTTPServer(HTTPServer):
                 self.shutdown_request(request)
             return
         try:
-            self._executor.submit(self._process_request_worker, request, client_address)
+            self._executor.submit(
+                self._process_request_worker,
+                request,
+                client_address,
+            )
         except Exception:
             self._slots.release()
             self.shutdown_request(request)
             raise
 
-    def _process_request_worker(self, request: socket.socket, client_address: tuple[str, int]) -> None:
+    def _process_request_worker(
+        self,
+        request: socket.socket,
+        client_address: tuple[str, int],
+    ) -> None:
         try:
             self.finish_request(request, client_address)
         except Exception as exc:
-            self.context.telemetry.event("http_handler_failure", error_type=type(exc).__name__)
+            self.context.telemetry.event(
+                "http_handler_failure",
+                error_type=type(exc).__name__,
+            )
         finally:
             try:
                 self.shutdown_request(request)
@@ -475,7 +527,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _health(self, *, readiness: bool) -> None:
         request_id = self._request_id()
-        payload = self.context.health.readiness() if readiness else self.context.health.liveness()
+        payload = (
+            self.context.health.readiness()
+            if readiness
+            else self.context.health.liveness()
+        )
         status = 200 if payload.get("ok") else 503
         self._reply(status, payload, request_id=request_id)
 
@@ -487,7 +543,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._health(readiness=True)
             return
         request_id = self._request_id()
-        self._reply(404, {"ok": False, "error": "not_found"}, request_id=request_id)
+        self._reply(
+            404,
+            {"ok": False, "error": "not_found"},
+            request_id=request_id,
+        )
 
     def do_HEAD(self) -> None:
         self.do_GET()
@@ -499,13 +559,24 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if self.path != "/v1/run":
                 status = 404
-                self._reject_unread_body(status, "not_found", request_id=request_id)
+                self._reject_unread_body(
+                    status,
+                    "not_found",
+                    request_id=request_id,
+                )
                 return
             if self.context.health.readiness().get("ok") is not True:
                 status = 503
-                self._reject_unread_body(status, "not_ready", request_id=request_id)
+                self._reject_unread_body(
+                    status,
+                    "not_ready",
+                    request_id=request_id,
+                )
                 return
-            if not self.context.authenticator.authorized(self.headers.get("Authorization")):
+
+            auth_headers = self.headers.get_all("Authorization") or []
+            principal = self.context.authenticator.authenticate(auth_headers)
+            if principal is None:
                 status = 401
                 self._reject_unread_body(
                     status,
@@ -514,6 +585,18 @@ class _Handler(BaseHTTPRequestHandler):
                     extra_headers={"WWW-Authenticate": "Bearer"},
                 )
                 return
+            # Authentication proves who crossed the HTTP boundary. It is not
+            # copied into task authority and therefore cannot silently become a
+            # Manager capability, approval, or tool authorization.
+            self.context.telemetry.event(
+                "http_authenticated",
+                request_id=request_id,
+                authentication_method=str(
+                    principal.get("authentication_method") or "unknown"
+                ),
+                principal_type=str(principal.get("principal_type") or "unknown"),
+            )
+
             if self.headers.get_all("Transfer-Encoding"):
                 status = 400
                 self._reject_unread_body(
@@ -543,17 +626,29 @@ class _Handler(BaseHTTPRequestHandler):
             content_lengths = self.headers.get_all("Content-Length") or []
             if not content_lengths:
                 status = 411
-                self._reject_unread_body(status, "content_length_required", request_id=request_id)
+                self._reject_unread_body(
+                    status,
+                    "content_length_required",
+                    request_id=request_id,
+                )
                 return
             raw_length = content_lengths[0]
             if len(content_lengths) != 1 or re.fullmatch(r"[0-9]+", raw_length) is None:
                 status = 400
-                self._reject_unread_body(status, "invalid_content_length", request_id=request_id)
+                self._reject_unread_body(
+                    status,
+                    "invalid_content_length",
+                    request_id=request_id,
+                )
                 return
             length = int(raw_length)
             if length > self.context.settings.max_request_bytes:
                 status = 413
-                self._reject_unread_body(status, "request_too_large", request_id=request_id)
+                self._reject_unread_body(
+                    status,
+                    "request_too_large",
+                    request_id=request_id,
+                )
                 return
             raw = self.rfile.read(length)
             if len(raw) != length:
@@ -569,7 +664,11 @@ class _Handler(BaseHTTPRequestHandler):
                 task_input = _validate_task_input(_decode_json(raw))
             except ValueError:
                 status = 400
-                self._reply(status, {"ok": False, "error": "invalid_request"}, request_id=request_id)
+                self._reply(
+                    status,
+                    {"ok": False, "error": "invalid_request"},
+                    request_id=request_id,
+                )
                 return
             try:
                 task_id = task_input["task"]["task_id"]
@@ -588,12 +687,20 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
             status = 200
-            self._reply(status, {"ok": True, "output": output}, request_id=request_id)
+            self._reply(
+                status,
+                {"ok": True, "output": output},
+                request_id=request_id,
+            )
         except (socket.timeout, TimeoutError):
             status = 408
             self.close_connection = True
             try:
-                self._reply(status, {"ok": False, "error": "request_timeout"}, request_id=request_id)
+                self._reply(
+                    status,
+                    {"ok": False, "error": "request_timeout"},
+                    request_id=request_id,
+                )
             except Exception:
                 pass
         except Exception as exc:
@@ -605,7 +712,11 @@ class _Handler(BaseHTTPRequestHandler):
                 error_type=type(exc).__name__,
             )
             try:
-                self._reply(status, {"ok": False, "error": "internal_error"}, request_id=request_id)
+                self._reply(
+                    status,
+                    {"ok": False, "error": "internal_error"},
+                    request_id=request_id,
+                )
             except Exception:
                 pass
         finally:
@@ -664,11 +775,32 @@ def create_service_server(
     operations: OperationalRuntime | None = None,
 ) -> tuple[_BoundedHTTPServer, ManagerServiceContext]:
     health = HealthRegistry()
-    authenticator = _BearerAuthenticator(config, settings)
-    if config.environment in {"staging", "production"}:
-        authenticator.require_available()
-    if settings.auth_mode == "bearer":
-        health.register_dependency(DependencyCheck("service_auth", authenticator.ready, critical=True))
+    try:
+        authenticator = ServiceAuthenticator(
+            config.secrets_dir,
+            ServiceAuthConfig(
+                mode=settings.auth_mode,
+                secret_name=settings.auth_secret_name,
+                issuer=settings.auth_issuer,
+                audience=settings.auth_audience,
+                principal_type=settings.auth_principal_type,
+                clock_skew_seconds=settings.auth_clock_skew_seconds,
+                require_jti=settings.auth_require_jti,
+            ),
+        )
+        if config.environment in {"staging", "production"}:
+            authenticator.require_available()
+    except (TypeError, ValueError) as exc:
+        raise ServiceConfigError(str(exc)) from exc
+
+    if settings.auth_mode != "none":
+        health.register_dependency(
+            DependencyCheck(
+                "service_auth",
+                authenticator.ready,
+                critical=True,
+            )
+        )
     if config.state_backend == "sqlite":
         assert config.sqlite_path is not None
         SQLiteRunStore(config.sqlite_path)
@@ -682,7 +814,10 @@ def create_service_server(
 
     resolved_operations = operations or _service_operations(config)
     limits = resolved_operations.capacity.limits
-    if limits.active_runs != config.max_concurrency or limits.queued_runs != config.queue_limit:
+    if (
+        limits.active_runs != config.max_concurrency
+        or limits.queued_runs != config.queue_limit
+    ):
         raise ServiceConfigError(
             "service operational capacity must match deployment max_concurrency and queue_limit"
         )
@@ -702,10 +837,15 @@ def create_service_server(
         operations=resolved_operations,
         telemetry=_Telemetry(resolved_operations),
     )
-    server = _BoundedHTTPServer((config.bind_host, config.bind_port), _Handler, context=context)
+    server = _BoundedHTTPServer(
+        (config.bind_host, config.bind_port),
+        _Handler,
+        context=context,
+    )
     if config.tls_mode == "direct":
         assert config.tls_cert_file and config.tls_key_file
         tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        tls.minimum_version = ssl.TLSVersion.TLSv1_2
         tls.load_cert_chain(config.tls_cert_file, config.tls_key_file)
         server.socket = tls.wrap_socket(server.socket, server_side=True)
     health.set_accepting_work(True)
@@ -725,7 +865,11 @@ def run_service(
     def drain(reason: str) -> None:
         context.health.begin_shutdown()
         context.telemetry.event("service_draining", reason=reason)
-        threading.Thread(target=server.shutdown, name="manager-http-shutdown", daemon=True).start()
+        threading.Thread(
+            target=server.shutdown,
+            name="manager-http-shutdown",
+            daemon=True,
+        ).start()
 
     shutdown.add_drain_callback(drain)
     shutdown.install_signal_handlers()
@@ -743,4 +887,7 @@ def run_service(
         context.health.begin_shutdown()
         server.server_close()
         context.health.mark_dead()
-        context.telemetry.event("service_stopped", reason=shutdown.reason or "server_exit")
+        context.telemetry.event(
+            "service_stopped",
+            reason=shutdown.reason or "server_exit",
+        )
