@@ -11,13 +11,7 @@ _STOP = object()
 
 
 class BoundedDaemonWorkerPool:
-    """Small daemon worker pool with a truthful bounded shutdown wait.
-
-    The service process must be able to leave an uncooperative request behind
-    after its configured drain budget expires. Standard ThreadPoolExecutor
-    workers are joined during interpreter shutdown, so wait=False alone cannot
-    provide that process-exit guarantee.
-    """
+    """Small daemon worker pool with a bounded shutdown wait."""
 
     def __init__(
         self,
@@ -29,8 +23,8 @@ class BoundedDaemonWorkerPool:
     ) -> None:
         if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
             raise ValueError("max_workers must be a positive integer")
-        if not isinstance(max_pending, int) or isinstance(max_pending, bool) or max_pending < 1:
-            raise ValueError("max_pending must be a positive integer")
+        if not isinstance(max_pending, int) or isinstance(max_pending, bool) or max_pending < max_workers:
+            raise ValueError("max_pending must be an integer at least as large as max_workers")
         if (
             isinstance(shutdown_timeout_seconds, bool)
             or not isinstance(shutdown_timeout_seconds, (int, float))
@@ -45,6 +39,8 @@ class BoundedDaemonWorkerPool:
         self._condition = threading.Condition()
         self._unfinished = 0
         self._closing = False
+        self._started = False
+        self._stops_sent = False
         self._threads = tuple(
             threading.Thread(
                 target=self._worker,
@@ -53,6 +49,11 @@ class BoundedDaemonWorkerPool:
             )
             for index in range(max_workers)
         )
+
+    def _start_workers(self) -> None:
+        if self._started:
+            return
+        self._started = True
         for thread in self._threads:
             thread.start()
 
@@ -62,6 +63,7 @@ class BoundedDaemonWorkerPool:
         with self._condition:
             if self._closing:
                 raise RuntimeError("worker pool is shutting down")
+            self._start_workers()
             self._unfinished += 1
         try:
             self._tasks.put_nowait((function, args, kwargs))
@@ -80,8 +82,6 @@ class BoundedDaemonWorkerPool:
             try:
                 function(*args, **kwargs)
             except BaseException:
-                # HTTP request workers own their error reporting. Keep this
-                # final containment boundary from killing capacity permanently.
                 pass
             finally:
                 with self._condition:
@@ -89,12 +89,6 @@ class BoundedDaemonWorkerPool:
                     self._condition.notify_all()
 
     def shutdown(self, *, wait: bool = True) -> bool:
-        """Stop accepting work and wait no longer than the configured budget.
-
-        Returns True when all submitted work drained inside the budget. On a
-        timeout, daemon workers may still be inside already-accepted work, but
-        they cannot keep interpreter shutdown alive.
-        """
         with self._condition:
             self._closing = True
             if wait and self._unfinished:
@@ -105,14 +99,11 @@ class BoundedDaemonWorkerPool:
                         break
                     self._condition.wait(remaining)
             drained = self._unfinished == 0
+            send_stops = drained and self._started and not self._stops_sent
+            if send_stops:
+                self._stops_sent = True
 
-        if drained:
+        if send_stops:
             for _ in self._threads:
-                try:
-                    self._tasks.put_nowait(_STOP)
-                except queue.Full:
-                    break
-            if wait:
-                for thread in self._threads:
-                    thread.join(timeout=0.1)
+                self._tasks.put_nowait(_STOP)
         return drained
