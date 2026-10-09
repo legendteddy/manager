@@ -2,22 +2,25 @@ from __future__ import annotations
 
 from typing import Any
 
-# Mirrors Manager's documented local authority order. Evidence-only sources are
-# intentionally absent so they can never become execution authority.
+# Mirrors Manager's documented local authority order. Lower is stronger.
 AUTHORITY_RANK = {
     "host_platform": 0,
     "maintainer_instruction": 1,
     "repository_governance": 2,
     "subsystem_rule": 3,
     "authoritative_state": 4,
+    "older_context": 5,
+    "inferred_memory": 5,
 }
-EVIDENCE_ONLY_KINDS = {
-    "external_content",
-    "retrieved_content",
-    "older_context",
-    "inferred_memory",
-}
+EVIDENCE_ONLY_KINDS = {"external_content", "retrieved_content"}
 LOCAL_CONSTRAINT_KINDS = {"repository_governance", "subsystem_rule"}
+
+
+def _event(status: str, summary: str, reference: str | None = None) -> dict[str, str]:
+    event = {"event_type": "authority", "status": status, "summary": summary}
+    if reference:
+        event["reference"] = reference
+    return event
 
 
 def _output(
@@ -68,15 +71,12 @@ def _blocked(
     finding: str,
     reference: str | None = None,
 ) -> dict[str, Any]:
-    event = {"event_type": "authority", "status": status, "summary": summary}
-    if reference:
-        event["reference"] = reference
     return _output(
         task,
         trace_status="blocked",
         result_status="blocked",
         workflow=workflow,
-        events=[event],
+        events=[_event(status, summary, reference)],
         finding=finding,
     )
 
@@ -90,12 +90,7 @@ def run_instruction_precedence(
     task: dict[str, Any],
     prior_state: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Model bootstrap and authority precedence for deterministic evals.
-
-    Hosts classify sources and list required repository context. This evaluator
-    never promotes retrieved text, conversation history, or inferred memory into
-    execution authority.
-    """
+    """Model documented bootstrap and authority precedence for deterministic evals."""
 
     context = prior_state.get("precedence_context")
     if context is None:
@@ -162,67 +157,60 @@ def run_instruction_precedence(
 
     for index, source in enumerate(sources):
         if not isinstance(source, dict):
-            events.append({
-                "event_type": "authority",
-                "status": "ignored_untrusted_source",
-                "summary": "Malformed instruction-like input was treated as evidence only.",
-            })
+            events.append(_event(
+                "ignored_untrusted_source",
+                "Malformed instruction-like input was treated as evidence only.",
+            ))
             continue
 
         source_id = source.get("source_id")
         kind = source.get("source_kind")
         scope = source.get("scope")
         if not all(isinstance(value, str) and value for value in (source_id, kind, scope)):
-            events.append({
-                "event_type": "authority",
-                "status": "ignored_untrusted_source",
-                "summary": "Unclassified instruction-like input was treated as evidence only.",
-            })
+            events.append(_event(
+                "ignored_untrusted_source",
+                "Unclassified instruction-like input was treated as evidence only.",
+            ))
             continue
 
         if kind in EVIDENCE_ONLY_KINDS or kind not in AUTHORITY_RANK:
-            events.append({
-                "event_type": "authority",
-                "status": "ignored_untrusted_source",
-                "reference": source_id,
-                "summary": "Evidence-only or unknown content was not treated as authority.",
-            })
+            events.append(_event(
+                "ignored_untrusted_source",
+                "Evidence-only or unknown content was not treated as authority.",
+                source_id,
+            ))
             continue
         if scope not in {target_scope, "*"}:
-            events.append({
-                "event_type": "authority",
-                "status": "ignored_scope_mismatch",
-                "reference": source_id,
-                "summary": "Authority for another scope was ignored.",
-            })
+            events.append(_event(
+                "ignored_scope_mismatch",
+                "Authority for another scope was ignored.",
+                source_id,
+            ))
             continue
 
         if source.get("constraint_only") is True:
             if kind in LOCAL_CONSTRAINT_KINDS:
                 local_constraints.append(source_id)
-                events.append({
-                    "event_type": "authority",
-                    "status": "local_constraint_loaded",
-                    "reference": source_id,
-                    "summary": "A stricter repository-local constraint was loaded.",
-                })
+                events.append(_event(
+                    "local_constraint_loaded",
+                    "A stricter repository-local constraint was loaded.",
+                    source_id,
+                ))
             else:
-                events.append({
-                    "event_type": "authority",
-                    "status": "ignored_invalid_constraint",
-                    "reference": source_id,
-                    "summary": "This source kind cannot declare a repository-local constraint.",
-                })
+                events.append(_event(
+                    "ignored_invalid_constraint",
+                    "This source kind cannot declare a repository-local constraint.",
+                    source_id,
+                ))
             continue
 
         candidates.append((AUTHORITY_RANK[kind], -_freshness(source), -index, source))
 
     if not candidates:
-        events.append({
-            "event_type": "authority",
-            "status": "no_authoritative_source",
-            "summary": "No applicable trusted instruction source remained.",
-        })
+        events.append(_event(
+            "no_authoritative_source",
+            "No applicable trusted instruction source remained.",
+        ))
         return _output(
             task,
             trace_status="blocked",
@@ -235,27 +223,22 @@ def run_instruction_precedence(
     selected = min(candidates, key=lambda item: item[:3])[3]
     selected_id = selected["source_id"]
     selected_kind = selected["source_kind"]
-    events.append({
-        "event_type": "authority",
-        "status": "selected",
-        "reference": selected_id,
-        "summary": f"Selected {selected_kind} as the highest applicable authority.",
-    })
+    events.append(_event(
+        "selected",
+        f"Selected {selected_kind} as the highest applicable authority.",
+        selected_id,
+    ))
 
-    # A newer explicit maintainer instruction is itself the higher local authority.
-    # Otherwise stricter repository/subsystem constraints remain binding.
-    preserved = [] if selected_kind == "maintainer_instruction" else local_constraints
-    for source_id in preserved:
-        events.append({
-            "event_type": "authority",
-            "status": "local_constraint_preserved",
-            "reference": source_id,
-            "summary": "Stricter repository-local governance remained binding.",
-        })
+    for source_id in local_constraints:
+        events.append(_event(
+            "local_constraint_preserved",
+            "Stricter repository-local governance remained binding.",
+            source_id,
+        ))
 
     finding = f"Selected authority source {selected_id} for scope {target_scope}."
-    if preserved:
-        finding += " Preserved local constraints: " + ", ".join(preserved) + "."
+    if local_constraints:
+        finding += " Preserved local constraints: " + ", ".join(local_constraints) + "."
 
     return _output(
         task,
