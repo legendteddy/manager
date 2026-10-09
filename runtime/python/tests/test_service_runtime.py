@@ -12,7 +12,10 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from manager_runtime.capacity import CapacityLimits
 from manager_runtime.deployment.config import DeploymentConfig
+from manager_runtime.observability import InMemoryTelemetrySink
+from manager_runtime.operations import OperationalRuntime
 from manager_runtime.service.server import (
     ManagerServiceSettings,
     ServiceConfigError,
@@ -63,8 +66,18 @@ def task() -> dict:
 
 
 class RunningService:
-    def __init__(self, cfg: DeploymentConfig, settings: ManagerServiceSettings) -> None:
-        self.server, self.context = create_service_server(cfg, settings)
+    def __init__(
+        self,
+        cfg: DeploymentConfig,
+        settings: ManagerServiceSettings,
+        *,
+        operations: OperationalRuntime | None = None,
+    ) -> None:
+        self.server, self.context = create_service_server(
+            cfg,
+            settings,
+            operations=operations,
+        )
         host, port = self.server.server_address[:2]
         self.host = str(host)
         self.port = int(port)
@@ -131,6 +144,7 @@ class ServiceRuntimeTests(unittest.TestCase):
             status, payload = service.request("/readyz")
             self.assertEqual(200, status)
             self.assertTrue(payload["ok"])
+            self.assertTrue(payload["dependencies"]["operations"]["ok"])
             raw = json.dumps(task()).encode()
             status, payload = service.request(
                 "/v1/run",
@@ -266,6 +280,74 @@ class ServiceRuntimeTests(unittest.TestCase):
             response = service.raw_exchange(raw)
             self.assertTrue(response.startswith(b"HTTP/1.1 400"), response[:128])
             self.assertIn(b"Connection: close", response)
+
+    def test_run_saturation_uses_shared_operational_runtime(self) -> None:
+        settings = ManagerServiceSettings("none", "service-auth-token", 1024 * 1024)
+        cfg = replace(config(), max_concurrency=1, queue_limit=1)
+        sink = InMemoryTelemetrySink(max_records=256)
+        operations = OperationalRuntime(
+            limits=CapacityLimits(active_runs=1, queued_runs=1),
+            telemetry_sink=sink,
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        first_finished = threading.Event()
+
+        def blocked_control_plane(_task_input: dict) -> dict:
+            entered.set()
+            release.wait(2.0)
+            return {"trace": {"status": "completed"}}
+
+        with patch("manager_runtime.service.server.run_control_plane", side_effect=blocked_control_plane):
+            with RunningService(cfg, settings, operations=operations) as service:
+                raw = json.dumps(task()).encode()
+
+                def issue_first() -> None:
+                    try:
+                        service.request(
+                            "/v1/run",
+                            method="POST",
+                            body=raw,
+                            headers={"Content-Type": "application/json"},
+                        )
+                    finally:
+                        first_finished.set()
+
+                first = threading.Thread(target=issue_first, daemon=True)
+                first.start()
+                self.assertTrue(entered.wait(1.0))
+
+                status, response = service.request(
+                    "/v1/run",
+                    method="POST",
+                    body=raw,
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(503, status)
+                self.assertEqual("service_overloaded", response["error"])
+
+                status, ready = service.request("/readyz")
+                self.assertEqual(200, status)
+                self.assertTrue(ready["ok"])
+                self.assertFalse(ready["dependencies"]["operations"]["ok"])
+                self.assertEqual("status=saturated", ready["dependencies"]["operations"]["detail"])
+
+                records = sink.snapshot()["records"]
+                self.assertTrue(
+                    any(
+                        kind == "metric" and value.name == "manager_overload_rejections_total"
+                        for kind, value in records
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        kind == "event" and value.name == "overload.rejected"
+                        for kind, value in records
+                    )
+                )
+
+                release.set()
+                self.assertTrue(first_finished.wait(1.0))
 
     def test_shutdown_budget_bounds_uncooperative_inflight_request(self) -> None:
         settings = ManagerServiceSettings("none", "service-auth-token", 1024 * 1024)
