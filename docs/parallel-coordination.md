@@ -55,6 +55,7 @@ dependencies:
     interface: <artifact or invariant required>
     blocking: true|false
     status: pending|ready|consumed|superseded
+    producer_head_sha: <exact producer head when a blocking dependency is ready/consumed>
 status: declared|active|blocked|ready_for_handoff|superseded|withdrawn
 ```
 
@@ -108,11 +109,12 @@ A cross-worker dependency names:
 - consumer;
 - required artifact/interface/invariant;
 - blocking vs non-blocking status;
-- state: `pending`, `ready`, `consumed`, or `superseded`.
+- state: `pending`, `ready`, `consumed`, or `superseded`;
+- for a blocking dependency marked `ready` or `consumed`, the exact producer head used as evidence.
 
-A worker may continue unrelated owned work while a blocking dependency is pending, but it must not present the dependent package as integration-ready.
+A worker may continue unrelated owned work while a blocking dependency is pending, but it must not present the dependent package as integration-ready. A ready consumer requires the producer to have an unambiguous current claim in `ready_for_handoff`, and its recorded `producer_head_sha` must still match a fresh live observation of the producer branch. An unknown, unfinished, superseded, or advanced producer keeps the consumer non-ready.
 
-If the producer changes the interface after the consumer has consumed it, the consumer's relevant verification is stale until reconciled.
+If the producer changes the interface or branch head after the consumer has consumed it, the consumer's relevant verification is stale until reconciled.
 
 ## Stale-state reconciliation
 
@@ -182,7 +184,7 @@ dependencies_consumed: []
 out_of_scope_findings: []
 ```
 
-`ready_for_integration` means the packet is internally complete, every reported test in the packet passed, and the tested head has been reconciled against fresh live branch/PR head observations. A failed test cannot be carried inside a ready packet; use a blocked/non-ready handoff instead. It does **not** mean the integrator must select the implementation or that the system is production-ready.
+`ready_for_integration` means the current claim is `ready_for_handoff`, the packet has no unresolved blockers, every reported test in the packet passed, blocking producer dependencies are ready at the exact recorded heads, and the tested head has been reconciled against fresh live branch/PR head observations. A blocked claim, nonempty blocker list, failed test, unfinished producer, or stale dependency head cannot be carried inside a ready packet; use a blocked/non-ready handoff instead. It does **not** mean the integrator must select the implementation or that the system is production-ready.
 
 A blocked return uses the existing bounded-handoff failure fields: `blocked_on`, `why_it_matters`, `what_was_tried`, `smallest_missing_input_or_permission`, and `safe_default_if_any`.
 
@@ -208,7 +210,7 @@ python coordination/validate.py evals/coordination/cases.json
 python -m unittest discover -s runtime/python/tests -p 'test_parallel_coordination.py' -v
 ```
 
-The validator is intentionally narrow. It detects structural coordination hazards such as duplicate scope/write claims, unsafe hotspot overlap, stale or unobserved branch/PR binding, unresolved blocking dependencies, mission drift, undeclared changed files, failed/missing test evidence, lost out-of-scope findings, and incomplete integrator packets.
+The validator is intentionally narrow. It detects structural coordination hazards such as duplicate scope/write claims, unsafe hotspot overlap, stale or unobserved branch/PR binding, blocked/not-ready completion claims, unresolved or stale blocking dependencies, mission drift, undeclared changed files, failed/missing test evidence, lost out-of-scope findings, and incomplete integrator packets.
 
 It does not decide domain correctness, assign authority, approve scope, or select implementations. Those remain governance/integrator decisions.
 
