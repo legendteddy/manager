@@ -99,11 +99,11 @@ def redact(
 
     def visit(current: Any, depth: int) -> Any:
         nonlocal remaining_nodes
-        if depth > max_depth:
-            return "[TRUNCATED_DEPTH]"
         if remaining_nodes <= 0:
             return "[TRUNCATED_BUDGET]"
         remaining_nodes -= 1
+        if depth > max_depth:
+            return "[TRUNCATED_DEPTH]"
         if current is None or isinstance(current, (bool, int)):
             return current
         if isinstance(current, float):
