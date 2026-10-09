@@ -69,8 +69,8 @@ class OperationalRuntime:
     ) -> Iterator[None]:
         if kind not in _EVENT_BY_KIND:
             raise ValueError(f"unknown operation kind: {kind}")
-        correlation = correlation or Correlation()
-        labels = dict(labels or {})
+        if correlation is None:
+            correlation = Correlation()
         event_prefix = _EVENT_BY_KIND[kind]
         started = time.monotonic()
         try:
@@ -83,7 +83,7 @@ class OperationalRuntime:
                     self.telemetry.event(
                         f"{event_prefix}.failed",
                         correlation=correlation,
-                        attributes={"error_type": type(exc).__name__, **dict(attributes or {})},
+                        attributes={"error_type": type(exc).__name__},
                     )
                     raise
                 else:
@@ -145,7 +145,8 @@ class OperationalRuntime:
             raise ValueError(f"unknown operational outcome: {outcome}")
         self.telemetry.metric(metric, "counter", 1, labels=labels)
         self.telemetry.event(
-            f"outcome.{outcome}", correlation=correlation or Correlation(),
+            f"outcome.{outcome}",
+            correlation=correlation if correlation is not None else Correlation(),
             attributes={"outcome": outcome},
         )
 
