@@ -15,6 +15,13 @@ class ExplosiveString:
         raise AssertionError("readiness must not stringify arbitrary detail objects")
 
 
+class ExplosiveDependency(DependencyCheck):
+    def __getattribute__(self, name):  # pragma: no cover - fields must never be read
+        if name in {"name", "check", "critical"}:
+            raise AssertionError("readiness registration must not invoke subclass hooks")
+        return super().__getattribute__(name)
+
+
 class HealthRegistryTests(unittest.TestCase):
     def test_starting_process_is_live_but_not_ready(self) -> None:
         registry = HealthRegistry()
@@ -38,6 +45,25 @@ class HealthRegistryTests(unittest.TestCase):
         registry.register_dependency(DependencyCheck("metrics", lambda: False, critical=False))
         registry.set_accepting_work(True)
         self.assertTrue(registry.readiness()["ok"])
+
+    def test_dependency_registration_rejects_subclass_without_running_hooks(self) -> None:
+        registry = HealthRegistry()
+        with self.assertRaisesRegex(TypeError, "DependencyCheck"):
+            registry.register_dependency(ExplosiveDependency("state", lambda: True))
+
+    def test_dependency_registration_rejects_invalid_fields(self) -> None:
+        registry = HealthRegistry()
+        with self.assertRaisesRegex(ValueError, "dependency name"):
+            registry.register_dependency(DependencyCheck(" state", lambda: True))
+        with self.assertRaisesRegex(TypeError, "check must be callable"):
+            registry.register_dependency(DependencyCheck("state", object()))  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "critical must be a boolean"):
+            registry.register_dependency(DependencyCheck("state", lambda: True, critical=ExplosiveBool()))  # type: ignore[arg-type]
+
+    def test_accepting_work_requires_real_boolean(self) -> None:
+        registry = HealthRegistry()
+        with self.assertRaisesRegex(TypeError, "accepting must be a boolean"):
+            registry.set_accepting_work(ExplosiveBool())  # type: ignore[arg-type]
 
     def test_dependency_exception_fails_closed(self) -> None:
         def broken() -> bool:
