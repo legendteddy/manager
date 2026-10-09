@@ -79,6 +79,14 @@ Tools marked `requires_verification` do not receive a successful verified result
 
 Only `executed` tool results are eligible for Stage 7 model continuation. A consequential tool therefore cannot feed a success result back to the model until its required verification has passed.
 
+## Tool result boundary
+
+Adapter output is untrusted data. Before Manager records or verifies a `ToolResult`, the Python reference runtime converts the returned value into a detached strict-JSON snapshot. Values containing Python-only objects, non-string object keys, cycles, non-finite numbers, excessive nesting, excessive item counts, or oversized serialized data fail closed as `invalid_tool_output` rather than escaping the governed execution boundary.
+
+The reference snapshot ceiling is 1 MiB of JSON, 10,000 values, and depth 32. MCP applies its own application-owned request/result resource policy as well, so a remote tool must satisfy both its MCP limits and the generic `ToolResult` JSON contract.
+
+Because output validation happens after adapter execution, a failed result does not prove that a consequential external effect did not occur. Durable retry/recovery logic must preserve the existing uncertain-side-effect rule and must not blindly repeat a consequential action solely because its returned output was invalid.
+
 ## Model-provider continuation
 
 The reference path exposes only **custom function proposals** to model providers. The model may request a function call; Manager's application layer owns whether that request executes.
