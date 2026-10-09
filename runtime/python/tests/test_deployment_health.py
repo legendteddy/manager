@@ -5,6 +5,16 @@ import unittest
 from manager_runtime.deployment.health import DependencyCheck, HealthRegistry
 
 
+class ExplosiveBool:
+    def __bool__(self) -> bool:  # pragma: no cover - must never execute
+        raise AssertionError("readiness must not invoke arbitrary truthiness")
+
+
+class ExplosiveString:
+    def __str__(self) -> str:  # pragma: no cover - must never execute
+        raise AssertionError("readiness must not stringify arbitrary detail objects")
+
+
 class HealthRegistryTests(unittest.TestCase):
     def test_starting_process_is_live_but_not_ready(self) -> None:
         registry = HealthRegistry()
@@ -39,6 +49,55 @@ class HealthRegistryTests(unittest.TestCase):
         result = registry.readiness()
         self.assertFalse(result["ok"])
         self.assertIn("RuntimeError", result["dependencies"]["state"]["detail"])
+
+    def test_malformed_dependency_tuple_fails_closed_without_probe_exception(self) -> None:
+        registry = HealthRegistry()
+        registry.register_dependency(DependencyCheck("state", lambda: (True,)))  # type: ignore[arg-type,return-value]
+        registry.set_accepting_work(True)
+        result = registry.readiness()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "critical_dependency_unavailable")
+        self.assertEqual(
+            result["dependencies"]["state"]["detail"],
+            "invalid dependency check result",
+        )
+
+    def test_dependency_result_does_not_run_arbitrary_truthiness(self) -> None:
+        registry = HealthRegistry()
+        registry.register_dependency(DependencyCheck("state", lambda: ExplosiveBool()))  # type: ignore[arg-type,return-value]
+        registry.set_accepting_work(True)
+        result = registry.readiness()
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["dependencies"]["state"]["detail"],
+            "invalid dependency check result",
+        )
+
+    def test_dependency_detail_does_not_run_arbitrary_string_conversion(self) -> None:
+        registry = HealthRegistry()
+        registry.register_dependency(
+            DependencyCheck("state", lambda: (True, ExplosiveString()))  # type: ignore[arg-type,return-value]
+        )
+        registry.set_accepting_work(True)
+        result = registry.readiness()
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["dependencies"]["state"]["detail"],
+            "invalid dependency check result",
+        )
+
+    def test_dependency_detail_is_bounded_and_single_line(self) -> None:
+        for detail in ("x" * 257, "line1\nline2", "bad\x00detail"):
+            with self.subTest(detail=repr(detail[:20])):
+                registry = HealthRegistry()
+                registry.register_dependency(DependencyCheck("state", lambda detail=detail: (True, detail)))
+                registry.set_accepting_work(True)
+                result = registry.readiness()
+                self.assertFalse(result["ok"])
+                self.assertEqual(
+                    result["dependencies"]["state"]["detail"],
+                    "invalid dependency check detail",
+                )
 
     def test_graceful_shutdown_drops_readiness_before_liveness(self) -> None:
         registry = HealthRegistry()
