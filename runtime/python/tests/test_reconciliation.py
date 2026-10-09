@@ -35,6 +35,11 @@ def _context() -> dict:
             "repo:consumer-a": "rule-v1",
             "repo:consumer-b": "rule-v1",
         },
+        "verified_states": {
+            "repo:canonical": "rule-v2",
+            "repo:consumer-a": "rule-v2",
+            "repo:consumer-b": "rule-v2",
+        },
         "required_surfaces": {
             "repo:consumer-a": ["docs", "tests"],
             "repo:consumer-b": ["docs", "tests", "adapters", "contracts"],
@@ -195,6 +200,58 @@ class ReconciliationControlPlaneTests(unittest.TestCase):
             "Consumer repo:consumer-c is absent from the dependency map.",
             residual,
         )
+
+    def test_failed_consumer_write_cannot_claim_verification_pass(self) -> None:
+        context = _context()
+        context["verified_states"]["repo:consumer-b"] = "rule-v1"
+
+        outputs = run(
+            {
+                "task": _task("reconcile-failed-consumer-write"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        residual = outputs["reconciliation"]["verification"]["residual_discrepancies"]
+        self.assertEqual(outputs["reconciliation"]["verification"]["status"], "fail")
+        self.assertIn(
+            "Post-action verification for target repo:consumer-b did not match confirmed truth.",
+            residual,
+        )
+        failed_actions = [
+            action
+            for action in outputs["reconciliation"]["actions"]
+            if action["target"] == "repo:consumer-b" and action["status"] == "failed"
+        ]
+        self.assertTrue(failed_actions)
+
+    def test_authoritative_owner_cannot_be_its_own_dependent_consumer(self) -> None:
+        context = _context()
+        context["dependencies"].append("repo:canonical")
+        context["inspected_dependencies"].append("repo:canonical")
+        context["consumer_states"]["repo:canonical"] = "rule-v1"
+        context["required_surfaces"]["repo:canonical"] = ["docs"]
+        context["reconciled_surfaces"]["repo:canonical"] = ["docs"]
+
+        outputs = run(
+            {
+                "task": _task("reconcile-owner-self-dependency"),
+                "prior_state": {"reconciliation_context": context},
+            }
+        )
+
+        residual = outputs["reconciliation"]["verification"]["residual_discrepancies"]
+        self.assertEqual(outputs["reconciliation"]["verification"]["status"], "fail")
+        self.assertIn(
+            "Authoritative owner repo:canonical cannot also be a dependent consumer.",
+            residual,
+        )
+        propagated_owner = [
+            action
+            for action in outputs["reconciliation"]["actions"]
+            if action["target"] == "repo:canonical" and action["action_type"] == "propagate"
+        ]
+        self.assertEqual(propagated_owner, [])
 
     def test_keyword_only_reconciliation_no_longer_fabricates_pass(self) -> None:
         outputs = run({"task": _task("reconcile-no-evidence")})
