@@ -29,6 +29,9 @@ _SAFE_METRIC_NAME = re.compile(r"^[a-zA-Z_:][a-zA-Z0-9_:.-]{0,95}$")
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9:._-]{1,128}$")
 _BEARER = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+\-/]+=*")
 _SECRETISH = re.compile(r"(?i)\b(?:sk|pk|api)[-_][A-Za-z0-9_-]{12,}\b")
+_DEFAULT_REDACTION_NODES = 256
+_LABEL_CARDINALITY_LIMIT = 64
+_LABEL_OVERFLOW = "overflow"
 
 
 def _now() -> str:
@@ -73,7 +76,13 @@ def _sensitive_key(key: Any) -> bool:
     return any(fragment in normalized for fragment in _SECRET_KEY_FRAGMENTS)
 
 
-def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> Any:
+def redact(
+    value: Any,
+    *,
+    max_depth: int = 6,
+    max_string_chars: int = 256,
+    max_nodes: int = _DEFAULT_REDACTION_NODES,
+) -> Any:
     """Return a bounded telemetry-safe representation.
 
     Traversal and retained output are both bounded. Arbitrary object string
@@ -83,10 +92,18 @@ def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> An
         raise ValueError("max_depth must be a non-negative integer")
     if not isinstance(max_string_chars, int) or isinstance(max_string_chars, bool) or max_string_chars < 1:
         raise ValueError("max_string_chars must be a positive integer")
+    if not isinstance(max_nodes, int) or isinstance(max_nodes, bool) or max_nodes < 1:
+        raise ValueError("max_nodes must be a positive integer")
+
+    remaining_nodes = max_nodes
 
     def visit(current: Any, depth: int) -> Any:
+        nonlocal remaining_nodes
         if depth > max_depth:
             return "[TRUNCATED_DEPTH]"
+        if remaining_nodes <= 0:
+            return "[TRUNCATED_BUDGET]"
+        remaining_nodes -= 1
         if current is None or isinstance(current, (bool, int)):
             return current
         if isinstance(current, float):
@@ -102,17 +119,25 @@ def redact(value: Any, *, max_depth: int = 6, max_string_chars: int = 256) -> An
             return text
         if isinstance(current, Mapping):
             result: dict[str, Any] = {}
-            entries = list(islice(current.items(), 65))
-            for key, item in entries[:64]:
+            truncated = False
+            for index, (key, item) in enumerate(islice(current.items(), 65)):
+                if index >= 64 or remaining_nodes <= 0:
+                    truncated = True
+                    break
                 skey = _safe_key(key)
                 result[skey] = _REDACTED if _sensitive_key(key) else visit(item, depth + 1)
-            if len(entries) > 64:
+            if truncated:
                 result["_truncated_items"] = True
             return result
         if isinstance(current, (list, tuple, set, frozenset)):
-            items = list(islice(current, 65))
-            result = [visit(item, depth + 1) for item in items[:64]]
-            if len(items) > 64:
+            result = []
+            truncated = False
+            for index, item in enumerate(islice(current, 65)):
+                if index >= 64 or remaining_nodes <= 0:
+                    truncated = True
+                    break
+                result.append(visit(item, depth + 1))
+            if truncated:
                 result.append("[TRUNCATED_ITEMS]")
             return result
         return f"<{type(current).__name__}>"
@@ -290,6 +315,8 @@ class SafeTelemetry:
         self._failure_lock = threading.Lock()
         self._sink_failures = 0
         self._sanitization_failures = 0
+        self._label_cardinality_overflows = 0
+        self._label_values: dict[str, set[str]] = {}
 
     @property
     def sink_failures(self) -> int:
@@ -301,6 +328,11 @@ class SafeTelemetry:
         with self._failure_lock:
             return self._sanitization_failures
 
+    @property
+    def label_cardinality_overflows(self) -> int:
+        with self._failure_lock:
+            return self._label_cardinality_overflows
+
     def _sink_failed(self) -> None:
         with self._failure_lock:
             self._sink_failures += 1
@@ -308,6 +340,23 @@ class SafeTelemetry:
     def _sanitization_failed(self) -> None:
         with self._failure_lock:
             self._sanitization_failures += 1
+
+    def _bound_label_cardinality(self, labels: dict[str, str]) -> dict[str, str]:
+        if not labels:
+            return labels
+        bounded: dict[str, str] = {}
+        with self._failure_lock:
+            for key, value in labels.items():
+                seen = self._label_values.setdefault(key, set())
+                if value in seen:
+                    bounded[key] = value
+                elif len(seen) < _LABEL_CARDINALITY_LIMIT:
+                    seen.add(value)
+                    bounded[key] = value
+                else:
+                    bounded[key] = _LABEL_OVERFLOW
+                    self._label_cardinality_overflows += 1
+        return bounded
 
     def _safe_attributes(self, attributes: Mapping[str, Any] | None) -> dict[str, Any]:
         try:
@@ -321,10 +370,11 @@ class SafeTelemetry:
 
     def _safe_labels(self, labels: Mapping[str, Any] | None) -> dict[str, str]:
         try:
-            return safe_labels(labels)
+            sanitized = safe_labels(labels)
         except Exception:
             self._sanitization_failed()
             return {}
+        return self._bound_label_cardinality(sanitized)
 
     def event(
         self,
