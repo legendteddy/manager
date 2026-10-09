@@ -188,17 +188,46 @@ def validate_supply_chain_workflow(path: Path, failures: list[str]) -> None:
                     f"supply-chain workflow action must be pinned to a 40-hex commit: {label}:{index + 1}"
                 )
 
-        if directive not in {"run: |", "run: >", "run: |-", "run: >-"}:
+        run_match = re.match(r"^run\s*:\s*(.*)$", directive)
+        if run_match is None:
             continue
+
+        scalar = run_match.group(1).strip()
         base_indent = len(line) - len(line.lstrip())
-        block_lines: list[str] = []
-        for candidate in lines[index + 1 :]:
-            if candidate.strip():
-                indent = len(candidate) - len(candidate.lstrip())
-                if indent <= base_indent:
+        if re.fullmatch(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?", scalar):
+            shell_lines: list[str] = []
+            for candidate in lines[index + 1 :]:
+                if candidate.strip():
+                    indent = len(candidate) - len(candidate.lstrip())
+                    if indent <= base_indent:
+                        break
+                shell_lines.append(candidate)
+            shell = "\n".join(shell_lines)
+        else:
+            # In a plain YAML scalar, a # preceded by whitespace starts a YAML
+            # comment. Quoted # characters stay part of the command.
+            quote: str | None = None
+            escaped = False
+            end = len(scalar)
+            for offset, character in enumerate(scalar):
+                if escaped:
+                    escaped = False
+                    continue
+                if character == "\\" and quote == '"':
+                    escaped = True
+                    continue
+                if character in {'"', "'"}:
+                    if quote is None:
+                        quote = character
+                    elif quote == character:
+                        quote = None
+                    continue
+                if character == "#" and quote is None and offset > 0 and scalar[offset - 1].isspace():
+                    end = offset
                     break
-            block_lines.append(candidate)
-        if "${{ inputs." in "\n".join(block_lines):
+            shell = scalar[:end]
+
+        if "${{ inputs." in shell:
             failures.append(
                 f"workflow_dispatch inputs must enter shell through env, not expression interpolation: {label}:{index + 1}"
             )

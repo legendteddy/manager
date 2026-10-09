@@ -95,6 +95,25 @@ class ReferenceRuntimeTests(unittest.TestCase):
                     "repo:canonical": "wording-v2",
                     "repo:docs-consumer": "wording-v2",
                 },
+                "action_receipts": [
+                    {
+                        "target": "repo:canonical",
+                        "action_type": "update_authority",
+                        "status": "completed",
+                        "evidence": "Synthetic receipt for the authoritative-owner update.",
+                    },
+                    {
+                        "target": "repo:docs-consumer",
+                        "action_type": "propagate",
+                        "status": "completed",
+                        "evidence": "Synthetic receipt for dependent documentation propagation.",
+                    },
+                ],
+                "final_verification_receipt": {
+                    "status": "pass",
+                    "details": "Synthetic final state verification receipt.",
+                    "residual_discrepancies": [],
+                },
             }
         }
         output = run(payload)
