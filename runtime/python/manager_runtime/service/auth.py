@@ -14,10 +14,12 @@ from ..security import (
 
 @dataclass(frozen=True, slots=True)
 class ServiceAuthConfig:
-    """Application-owned API caller authentication policy.
+    """Application-owned API caller authentication and route authorization policy.
 
-    Authentication proves an API caller identity at the network boundary. It
-    deliberately does not grant Manager tool authorization or approval.
+    Authentication proves an API caller identity at the network boundary. JWT
+    mode separately requires an application-owned capability before the caller
+    may use the run endpoint. Neither step grants Manager tool authorization or
+    human approval.
     """
 
     mode: str
@@ -25,6 +27,7 @@ class ServiceAuthConfig:
     issuer: str | None = None
     audience: str | None = None
     principal_type: str = "api_client"
+    required_capability: str = "manager.run"
     clock_skew_seconds: int = 60
     require_jti: bool = True
 
@@ -35,6 +38,8 @@ class ServiceAuthConfig:
             raise ValueError("service authentication secret name must be non-empty text")
         if not isinstance(self.principal_type, str) or not self.principal_type:
             raise ValueError("service principal type must be non-empty text")
+        if not isinstance(self.required_capability, str) or not self.required_capability:
+            raise ValueError("service required capability must be non-empty text")
         if (
             not isinstance(self.clock_skew_seconds, int)
             or isinstance(self.clock_skew_seconds, bool)
@@ -52,7 +57,7 @@ class ServiceAuthConfig:
 
 
 class ServiceAuthenticator:
-    """Authenticate one API request without turning authentication into authority."""
+    """Authenticate and route-authorize one API request without widening Manager authority."""
 
     def __init__(self, secrets_dir: str | None, config: ServiceAuthConfig) -> None:
         self.config = config
@@ -120,6 +125,7 @@ class ServiceAuthenticator:
             # grant of scope or approval.
             return {
                 "authenticated": False,
+                "authorized": False,
                 "principal_type": "anonymous",
                 "authentication_method": "none",
             }
@@ -129,6 +135,9 @@ class ServiceAuthenticator:
             return None
 
         if self.config.mode == "bearer":
+            # Static bearer mode is a compatibility API-key boundary: possession
+            # of the application-owned secret authenticates and authorizes this
+            # one service route, but never becomes Manager tool authority.
             try:
                 assert self.provider is not None
                 expected = self.provider.acquire(self.config.secret_name).reveal()
@@ -139,6 +148,7 @@ class ServiceAuthenticator:
                 return None
             return {
                 "authenticated": True,
+                "authorized": True,
                 "principal_type": self.config.principal_type,
                 "authentication_method": "static_bearer",
             }
@@ -151,8 +161,15 @@ class ServiceAuthenticator:
             )
         except (SecurityBoundaryError, TypeError, ValueError):
             return None
+
+        capabilities = identity.get("capabilities")
+        authorized = (
+            isinstance(capabilities, list)
+            and self.config.required_capability in capabilities
+        )
         return {
             "authenticated": True,
+            "authorized": authorized,
             "authentication_method": "jwt_hs256",
             **identity,
         }
