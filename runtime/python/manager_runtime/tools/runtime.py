@@ -7,6 +7,7 @@ from ..capacity import OverloadedError
 from ..observability import Correlation
 from ..operations import DEFAULT_OPERATIONS, OperationalRuntime
 from ..security import SecurityBoundaryError, evaluate_tool_authorization
+from ..serialization import strict_json_snapshot
 from .base import (
     ToolPayload,
     ToolRegistry,
@@ -373,6 +374,19 @@ def execute_tool_request(
             status="failed",
             reason="tool_execution_failed",
             verification_status="unverified",
+            error=_safe_exception_type(exc),
+        )
+
+    try:
+        output = strict_json_snapshot(output, label="tool output")
+    except (TypeError, ValueError) as exc:
+        return _result(
+            request,
+            side_effect_class,
+            status="failed",
+            reason="invalid_tool_output",
+            verification_status="unverified",
+            verification_details="Tool executed but returned output outside the strict JSON contract.",
             error=_safe_exception_type(exc),
         )
 
