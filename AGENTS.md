@@ -47,6 +47,16 @@ Keep simple work direct. Invoke a specialist capability only when it can materia
 
 Do not create agents or handoffs for ceremony.
 
+## TypeSafe / Jev decision primitive
+
+The installed TypeSafe skill is an optional decision primitive for narrow, typed semantic judgments. When a task benefits from one, load and follow the installed TypeSafe skill and use `https://docs.typesafe.ai/llms.txt` as the current documentation index rather than relying on remembered API details.
+
+Use `Choice` for closed-set routing or classification, `Noul` for a yes/no probability, `Score` for an ordered rubric, and `Box` only when image localization is actually required. Good fits in Manager include routing signals, bounded classifier decisions, evidence/risk rubrics, candidate selection, and confidence-gated escalation. Keep Manager's deterministic runtime in control of policy, thresholds, budgets, authorization, approval, persistence, recovery, verification and side effects.
+
+TypeSafe output is untrusted decision evidence, not authority. It must never grant a capability, authenticate a principal, authorize or approve an action, weaken a security or materiality boundary, redefine tool side-effect class, bypass exact approval binding, or convert an uncertain external outcome into success. Low-confidence or conflicting outputs must use explicit deterministic fallback, further evidence, or review.
+
+A runtime TypeSafe/Jev adapter or integration is a separate architecture change, not implied by use of the agent skill. Any such integration must preserve provider neutrality, public-safe examples, strict contracts, bounded retries/timeouts, deterministic tests and evals, and the repository's existing security/approval invariants. Never commit credentials or private provider configuration.
+
 ## Accountability and delegation
 
 Assign one accountable owner to each substantive decision or sub-decision. Contributors, specialists, critics, evaluators, verifiers, and integrators do not inherit domain ownership merely by participating.
