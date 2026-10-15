@@ -6,6 +6,16 @@ The format is intentionally simple while the project remains pre-stable. Release
 
 ## Unreleased
 
+### Production service boundary
+
+- add a production `manager-service` gateway separate from the smaller deterministic/reference HTTP server;
+- expose authenticated durable submit/query/resume/cancel/approval/recovery APIs plus version, capabilities, liveness and readiness endpoints;
+- add strict HTTP/JSON framing, header/body/depth/node/string bounds and JSON-safe parser/error envelopes;
+- add durable network idempotency with service-subject binding, duplicate suppression, lost-response replay, crash-to-ambiguous recovery and run ownership isolation;
+- make accepted mutations independent of client disconnects while preserving bounded request waits and safe-point-only cancellation semantics;
+- drain accepted operations on shutdown and classify unfinished network requests as ambiguous instead of replaying uncertain effects;
+- keep raw MCP serving and streaming/SSE disabled until separate protocol, security, reconnect, backpressure, and authorization contracts have evidence.
+
 ### First-release engineering
 
 - add required Python 3.11, 3.12, 3.13, and 3.14 compatibility coverage, including wheel build/install/import on every advertised line;

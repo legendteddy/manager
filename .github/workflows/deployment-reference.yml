@@ -63,20 +63,78 @@ jobs:
             --entrypoint manager-deployment \
             manager-deployment:ci validate-config
 
-      - name: Start authenticated production service and exercise health/API/drain
+      - name: Start authenticated production gateway and exercise health/API/drain
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p .ci-secrets
+          mkdir -p .ci-secrets .ci-backend
           printf '%s\n' 'synthetic-ci-service-token' > .ci-secrets/service-auth-token
           chmod 0444 .ci-secrets/service-auth-token
+          cat > .ci-backend/ci_backend.py <<'PY'
+          from __future__ import annotations
+
+          import threading
+
+
+          class Backend:
+              def __init__(self):
+                  self._lock = threading.Lock()
+                  self._runs = {}
+
+              def readiness(self):
+                  return True
+
+              def submit(self, task_input, *, subject):
+                  task = task_input["task"]
+                  run_id = f"run:{task['task_id']}"
+                  state = {
+                      "run_id": run_id,
+                      "task_id": task["task_id"],
+                      "status": "completed",
+                      "revision": 1,
+                      "created_at": "2026-10-09T00:00:00Z",
+                      "updated_at": "2026-10-09T00:00:00Z",
+                      "recovery_required": False,
+                      "result": {"status": "completed", "finding": "synthetic container smoke"},
+                  }
+                  with self._lock:
+                      self._runs[run_id] = state
+                  return dict(state)
+
+              def get_run(self, run_id, *, subject):
+                  with self._lock:
+                      state = self._runs.get(run_id)
+                  if state is None:
+                      from manager_runtime.service.api import ApiError
+                      raise ApiError("run_not_found", "run was not found", status=404)
+                  return dict(state)
+
+              def resume(self, run_id, *, subject):
+                  return self.get_run(run_id, subject=subject)
+
+              def cancel(self, run_id, *, subject):
+                  return self.get_run(run_id, subject=subject)
+
+              def decide_approval(self, run_id, decision, *, subject):
+                  return self.get_run(run_id, subject=subject)
+
+              def resolve_recovery(self, run_id, resolution, *, subject):
+                  return self.get_run(run_id, subject=subject)
+
+
+          def factory(config, settings):
+              return Backend()
+          PY
+          chmod 0444 .ci-backend/ci_backend.py
 
           container_id="$(docker run -d \
             --read-only \
             --tmpfs /var/lib/manager/state:uid=10001,gid=10001,mode=0750,size=64m \
             --tmpfs /var/run/manager:uid=10001,gid=10001,mode=0750,size=64m \
             --mount type=bind,src="$PWD/.ci-secrets",dst=/run/secrets,readonly \
+            --mount type=bind,src="$PWD/.ci-backend",dst=/opt/manager-ci,readonly \
             --publish 127.0.0.1:18080:8080 \
+            --env PYTHONPATH=/opt/manager-ci \
             --env MANAGER_DEPLOY_ENV=production \
             --env MANAGER_DEPLOY_BIND_HOST=0.0.0.0 \
             --env MANAGER_DEPLOY_BIND_PORT=8080 \
@@ -97,6 +155,8 @@ jobs:
             --env MANAGER_DEPLOY_READ_ONLY_ROOT=true \
             --env MANAGER_SERVICE_AUTH_MODE=bearer \
             --env MANAGER_SERVICE_AUTH_SECRET_NAME=service-auth-token \
+            --env MANAGER_SERVICE_BACKEND_FACTORY=ci_backend:factory \
+            --env MANAGER_SERVICE_IDEMPOTENCY_PATH=/var/lib/manager/state/manager.sqlite3 \
             manager-deployment:ci)"
           trap 'docker logs "$container_id" || true; docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
 
@@ -120,6 +180,10 @@ jobs:
                   raise SystemExit("service did not become ready")
               time.sleep(0.25)
 
+          with urllib.request.urlopen(base + "/livez", timeout=2) as response:
+              assert response.status == 200
+              assert json.load(response)["ok"] is True
+
           task = {
               "task": {
                   "task_id": "container-smoke",
@@ -135,7 +199,7 @@ jobs:
           }
           body = json.dumps(task).encode()
           unauth = urllib.request.Request(
-              base + "/v1/run",
+              base + "/v1/runs",
               data=body,
               method="POST",
               headers={"Content-Type": "application/json"},
@@ -147,19 +211,46 @@ jobs:
               assert exc.code == 401, exc.code
 
           authenticated = urllib.request.Request(
-              base + "/v1/run",
+              base + "/v1/runs",
               data=body,
               method="POST",
               headers={
                   "Content-Type": "application/json",
                   "Authorization": "Bearer synthetic-ci-service-token",
+                  "Idempotency-Key": "container-smoke-submit",
               },
           )
           with urllib.request.urlopen(authenticated, timeout=3) as response:
               result = json.load(response)
               assert response.status == 200
               assert result["ok"] is True
-              assert result["output"]["trace"]["status"] == "completed"
+              assert result["data"]["status"] == "completed"
+              assert result["data"]["run_id"] == "run:container-smoke"
+
+          query = urllib.request.Request(
+              base + "/v1/runs/run:container-smoke",
+              headers={"Authorization": "Bearer synthetic-ci-service-token"},
+          )
+          with urllib.request.urlopen(query, timeout=3) as response:
+              result = json.load(response)
+              assert response.status == 200
+              assert result["data"]["status"] == "completed"
+
+          replay = urllib.request.Request(
+              base + "/v1/runs",
+              data=body,
+              method="POST",
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer synthetic-ci-service-token",
+                  "Idempotency-Key": "container-smoke-submit",
+              },
+          )
+          with urllib.request.urlopen(replay, timeout=3) as response:
+              result = json.load(response)
+              assert response.status == 200
+              assert response.headers.get("Idempotency-Replayed") == "true"
+              assert result["data"]["run_id"] == "run:container-smoke"
           PY
 
           docker stop --time 10 "$container_id" >/dev/null
