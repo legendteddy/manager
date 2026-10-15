@@ -102,7 +102,12 @@ class RunningService:
         body: bytes | None = None,
         headers: dict[str, str] | None = None,
     ) -> tuple[int, dict]:
-        request = urllib.request.Request(self.base + path, data=body, method=method, headers=headers or {})
+        request = urllib.request.Request(
+            self.base + path,
+            data=body,
+            method=method,
+            headers=headers or {},
+        )
         try:
             with urllib.request.urlopen(request, timeout=3) as response:
                 return response.status, json.loads(response.read())
@@ -129,7 +134,7 @@ class ServiceRuntimeTests(unittest.TestCase):
     def test_production_cannot_disable_authentication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cfg = config(environment="production", secrets_dir=directory)
-            with self.assertRaisesRegex(ServiceConfigError, "must use bearer"):
+            with self.assertRaisesRegex(ServiceConfigError, "cannot be disabled"):
                 load_service_settings(
                     cfg,
                     environ={"MANAGER_SERVICE_AUTH_MODE": "none"},
@@ -176,7 +181,11 @@ class ServiceRuntimeTests(unittest.TestCase):
             secret = Path(directory) / "service-auth-token"
             secret.write_text("first-token\n", encoding="utf-8")
             cfg = config(secrets_dir=directory)
-            settings = ManagerServiceSettings("bearer", "service-auth-token", 1024 * 1024)
+            settings = ManagerServiceSettings(
+                "bearer",
+                "service-auth-token",
+                1024 * 1024,
+            )
             with RunningService(cfg, settings) as service:
                 raw = json.dumps(task()).encode()
                 status, _ = service.request(
@@ -298,7 +307,10 @@ class ServiceRuntimeTests(unittest.TestCase):
             release.wait(2.0)
             return {"trace": {"status": "completed"}}
 
-        with patch("manager_runtime.service.server.run_control_plane", side_effect=blocked_control_plane):
+        with patch(
+            "manager_runtime.service.server.run_control_plane",
+            side_effect=blocked_control_plane,
+        ):
             with RunningService(cfg, settings, operations=operations) as service:
                 raw = json.dumps(task()).encode()
 
@@ -330,12 +342,16 @@ class ServiceRuntimeTests(unittest.TestCase):
                 self.assertEqual(200, status)
                 self.assertTrue(ready["ok"])
                 self.assertFalse(ready["dependencies"]["operations"]["ok"])
-                self.assertEqual("status=saturated", ready["dependencies"]["operations"]["detail"])
+                self.assertEqual(
+                    "status=saturated",
+                    ready["dependencies"]["operations"]["detail"],
+                )
 
                 records = sink.snapshot()["records"]
                 self.assertTrue(
                     any(
-                        kind == "metric" and value.name == "manager_overload_rejections_total"
+                        kind == "metric"
+                        and value.name == "manager_overload_rejections_total"
                         for kind, value in records
                     )
                 )
@@ -361,7 +377,10 @@ class ServiceRuntimeTests(unittest.TestCase):
             release.wait(2.0)
             return {"trace": {"status": "completed"}}
 
-        with patch("manager_runtime.service.server.run_control_plane", side_effect=blocked_control_plane):
+        with patch(
+            "manager_runtime.service.server.run_control_plane",
+            side_effect=blocked_control_plane,
+        ):
             with RunningService(cfg, settings) as service:
                 raw = json.dumps(task()).encode()
 
